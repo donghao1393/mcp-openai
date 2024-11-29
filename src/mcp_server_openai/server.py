@@ -80,7 +80,7 @@ def serve(openai_api_key: str) -> Server:
                     temperature=arguments.get("temperature", 0.7),
                     max_tokens=arguments.get("max_tokens", 500)
                 )
-                return [types.TextContent(text=f"OpenAI 回答:\n{response}")]
+                return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
             
             elif name == "create-image":
                 timeout = arguments.get("timeout", 60.0)
@@ -92,7 +92,7 @@ def serve(openai_api_key: str) -> Server:
                 )
                 
                 # 首先发送状态消息
-                response_contents = [types.TextContent(text=status_message)]
+                response_contents = [types.TextContent(type="text", text=status_message)]
                 
                 image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
@@ -107,6 +107,7 @@ def serve(openai_api_key: str) -> Server:
                 # 添加生成完成的消息
                 response_contents.append(
                     types.TextContent(
+                        type="text",
                         text='已生成 {} 张图像，描述为："{}"'.format(
                             len(image_data_list),
                             arguments['prompt']
@@ -118,6 +119,7 @@ def serve(openai_api_key: str) -> Server:
                 for image_data in image_data_list:
                     response_contents.append(
                         types.ImageContent(
+                            type="image",
                             data=base64.b64encode(image_data["data"]).decode('utf-8'),
                             mediaType=image_data["media_type"]
                         )
@@ -129,11 +131,12 @@ def serve(openai_api_key: str) -> Server:
         except TimeoutError as e:
             logger.error(f"请求超时: {str(e)}")
             return [types.TextContent(
+                type="text",
                 text=f"错误: 生成图像请求超时。您可以尝试:\n1. 增加超时时间（timeout参数）\n2. 增加重试次数（max_retries参数）\n3. 简化图像描述\n\n详细错误: {str(e)}"
             )]
         except Exception as e:
             logger.error(f"工具调用失败: {str(e)}")
-            return [types.TextContent(text=f"错误: {str(e)}")]
+            return [types.TextContent(type="text", text=f"错误: {str(e)}")]
 
     return server
 
