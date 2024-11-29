@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import sys
+import base64
 from typing import Optional
 
 import click
@@ -37,7 +38,7 @@ def serve(openai_api_key: str) -> Server:
             ),
             types.Tool(
                 name="create-image",
-                description="使用 DALL·E 生成图像",
+                description="使用 DALL·E 生成图像，直接在对话中显示",
                 inputSchema={
                     "type": "object",
                     "properties": {
@@ -68,17 +69,32 @@ def serve(openai_api_key: str) -> Server:
                 return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
             
             elif name == "create-image":
-                image_urls = await connector.create_image(
+                image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
                     model=arguments.get("model", "dall-e-3"),
                     size=arguments.get("size", "1024x1024"),
                     quality=arguments.get("quality", "standard"),
                     n=arguments.get("n", 1)
                 )
-                return [types.TextContent(
-                    type="text", 
-                    text="生成的图像链接:\n" + "\n".join(f"- {url}" for url in image_urls)
-                )]
+                
+                # 构建包含图像和说明文字的响应
+                response_contents = [
+                    types.TextContent(type="text", text=f"已生成 {len(image_data_list)} 张图像，描述为："{arguments['prompt']}"")
+                ]
+                
+                # 添加图像内容
+                for idx, image_data in enumerate(image_data_list, 1):
+                    response_contents.append(
+                        types.TextContent(
+                            type="image",
+                            image={
+                                "data": base64.b64encode(image_data["data"]).decode('utf-8'),
+                                "mediaType": image_data["media_type"]
+                            }
+                        )
+                    )
+                
+                return response_contents
 
             raise ValueError(f"未知的工具: {name}")
         except Exception as e:
@@ -98,7 +114,7 @@ def main(openai_api_key: str):
                     read_stream, write_stream,
                     InitializationOptions(
                         server_name="openai-server",
-                        server_version="0.2.0",  # 更新版本号
+                        server_version="0.3.0",  # 更新版本号
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(),
                             experimental_capabilities={}

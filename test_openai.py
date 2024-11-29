@@ -22,11 +22,16 @@ async def test_create_image():
     
     connector = LLMConnector(api_key)
     print("\n测试 DALL·E 图像生成...")
-    urls = await connector.create_image(
+    image_data_list = await connector.create_image(
         prompt="一个安静的山间日落景色",
         model="dall-e-3",
         size="1024x1024"
     )
-    print(f"生成的图像 URL: {urls[0][:50]}...")
-    assert urls and len(urls) > 0
-    assert urls[0].startswith("https://")
+    
+    # 验证返回的图像数据
+    assert image_data_list and len(image_data_list) > 0
+    for image_data in image_data_list:
+        assert "data" in image_data
+        assert "media_type" in image_data
+        assert image_data["media_type"] == "image/png"
+        assert len(image_data["data"]) > 0  # 确保有图像数据

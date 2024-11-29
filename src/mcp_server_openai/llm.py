@@ -1,4 +1,6 @@
 import logging
+import base64
+from typing import Union, List, Dict
 from openai import AsyncOpenAI
 
 logger = logging.getLogger(__name__)
@@ -30,9 +32,9 @@ class LLMConnector:
         size: str = "1024x1024",
         quality: str = "standard",
         n: int = 1
-    ) -> list[str]:
+    ) -> List[Dict[str, Union[bytes, str]]]:
         """
-        使用 DALL·E 生成图像。
+        使用 DALL·E 生成图像并返回图像数据。
         
         参数:
             prompt (str): 图像描述
@@ -42,7 +44,7 @@ class LLMConnector:
             n (int): 生成图像的数量 (1-10)
         
         返回:
-            list[str]: 生成的图像 URL 列表
+            List[Dict[str, Union[bytes, str]]]: 包含图像数据和相关信息的字典列表
         """
         try:
             response = await self.client.images.generate(
@@ -50,9 +52,19 @@ class LLMConnector:
                 prompt=prompt,
                 size=size,
                 quality=quality,
-                n=n
+                n=n,
+                response_format="b64_json"  # 请求base64格式的图像数据
             )
-            return [image.url for image in response.data]
+            
+            image_data_list = []
+            for image in response.data:
+                image_data = {
+                    "data": base64.b64decode(image.b64_json),
+                    "media_type": "image/png"
+                }
+                image_data_list.append(image_data)
+            
+            return image_data_list
         except Exception as e:
             logger.error(f"使用 DALL·E 生成图像失败: {str(e)}")
             raise
