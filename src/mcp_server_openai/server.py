@@ -8,7 +8,7 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
+from mcp.server.models import InitializationOptions, ProgressNotification
 
 from .llm import LLMConnector
 
@@ -73,6 +73,11 @@ def serve(openai_api_key: str) -> Server:
             if not arguments:
                 raise ValueError("未提供参数")
 
+            request_context = server.request_context
+            progress_token = None
+            if request_context and request_context.meta and hasattr(request_context.meta, 'progressToken'):
+                progress_token = request_context.meta.progressToken
+
             if name == "ask-openai":
                 response = await connector.ask_openai(
                     query=arguments["query"],
@@ -94,6 +99,16 @@ def serve(openai_api_key: str) -> Server:
                 # 首先发送状态消息
                 response_contents = [types.TextContent(type="text", text=status_message)]
                 
+                if progress_token:
+                    await request_context.session.send_notification(
+                        "notifications/progress",
+                        ProgressNotification(
+                            progressToken=progress_token,
+                            progress=0.0,
+                            total=100.0
+                        ).model_dump()
+                    )
+                
                 image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
                     model=arguments.get("model", "dall-e-3"),
@@ -103,6 +118,16 @@ def serve(openai_api_key: str) -> Server:
                     timeout=timeout,
                     max_retries=max_retries
                 )
+                
+                if progress_token:
+                    await request_context.session.send_notification(
+                        "notifications/progress",
+                        ProgressNotification(
+                            progressToken=progress_token,
+                            progress=100.0,
+                            total=100.0
+                        ).model_dump()
+                    )
                 
                 # 添加生成完成的消息
                 response_contents.append(
@@ -153,7 +178,9 @@ def main(openai_api_key: str):
                         server_name="openai-server",
                         server_version="0.3.2",
                         capabilities=server.get_capabilities(
-                            notification_options=NotificationOptions(),
+                            notification_options=NotificationOptions(
+                                progress=True
+                            ),
                             experimental_capabilities={}
                         )
                     )
