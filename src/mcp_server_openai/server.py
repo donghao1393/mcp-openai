@@ -8,7 +8,7 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions, ProgressNotification
+from mcp.server.models import InitializationOptions
 
 from .llm import LLMConnector
 
@@ -97,13 +97,14 @@ def serve(openai_api_key: str) -> Server:
                 if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
                     progress_token = server.request_context.meta.progressToken
                     # 发送初始进度
+                    progress_params = types.ProgressNotificationParams(
+                        progressToken=progress_token,
+                        progress=0,
+                        total=100
+                    )
                     await server.request_context.session.send_notification(
                         "notifications/progress",
-                        ProgressNotification(
-                            progressToken=progress_token,
-                            progress=0,
-                            total=100
-                        ).model_dump()
+                        progress_params.model_dump()
                     )
 
                 image_data_list = await connector.create_image(
@@ -118,13 +119,14 @@ def serve(openai_api_key: str) -> Server:
                 
                 if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
                     # 发送完成进度
+                    progress_params = types.ProgressNotificationParams(
+                        progressToken=progress_token,
+                        progress=100,
+                        total=100
+                    )
                     await server.request_context.session.send_notification(
                         "notifications/progress",
-                        ProgressNotification(
-                            progressToken=progress_token,
-                            progress=100,
-                            total=100
-                        ).model_dump()
+                        progress_params.model_dump()
                     )
                 
                 # 添加生成完成的消息
