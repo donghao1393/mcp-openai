@@ -121,7 +121,7 @@ def serve(openai_api_key: str) -> Server:
                         types.ImageContent(
                             type="image",
                             data=base64.b64encode(image_data["data"]).decode('utf-8'),
-                            mediaType=image_data["media_type"]
+                            mimeType=image_data["media_type"]
                         )
                     )
                 
