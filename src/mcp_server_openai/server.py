@@ -68,7 +68,7 @@ def serve(openai_api_key: str) -> Server:
         ]
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.Content]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent]:
         try:
             if not arguments:
                 raise ValueError("未提供参数")
