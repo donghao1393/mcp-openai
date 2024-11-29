@@ -8,8 +8,7 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
-from mcp.shared.notifications import ProgressNotification
+from mcp.server.models import InitializationOptions, ProgressNotification
 
 from .llm import LLMConnector
 
