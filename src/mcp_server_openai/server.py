@@ -34,11 +34,25 @@ def serve(openai_api_key: str) -> Server:
                     },
                     "required": ["query"]
                 }
+            ),
+            types.Tool(
+                name="generate-image",
+                description="Generate an image using DALL-E 3",
+                inputSchema={
+                    "type": "object",
+                    "properties": {
+                        "prompt": {"type": "string", "description": "Image generation prompt"},
+                        "size": {"type": "string", "default": "1024x1024", "enum": ["1024x1024", "1024x1792", "1792x1024"]},
+                        "quality": {"type": "string", "default": "standard", "enum": ["standard", "hd"]},
+                        "style": {"type": "string", "default": "vivid", "enum": ["vivid", "natural"]}
+                    },
+                    "required": ["prompt"]
+                }
             )
         ]
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.Content]:
         try:
             if not arguments:
                 raise ValueError("No arguments provided")
@@ -51,6 +65,21 @@ def serve(openai_api_key: str) -> Server:
                     max_tokens=arguments.get("max_tokens", 500)
                 )
                 return [types.TextContent(type="text", text=f"OpenAI Response:\n{response}")]
+            
+            elif name == "generate-image":
+                image_data = await connector.generate_image(
+                    prompt=arguments["prompt"],
+                    size=arguments.get("size", "1024x1024"),
+                    quality=arguments.get("quality", "standard"),
+                    style=arguments.get("style", "vivid")
+                )
+                return [
+                    types.ImageContent(
+                        type="image",
+                        format="image/png",
+                        data=image_data
+                    )
+                ]
 
             raise ValueError(f"Unknown tool: {name}")
         except Exception as e:
