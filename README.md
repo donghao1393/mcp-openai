@@ -1,12 +1,18 @@
-# OpenAI MCP Server
+# OpenAI MCP 服务器
 
-Query OpenAI models directly from Claude using MCP protocol.
+通过 MCP 协议直接从 Claude 调用 OpenAI 的模型进行对话和图像生成。
 
-![preview](preview.png)
+## 功能特点
 
-## Setup
+- 支持与 GPT-4 和 GPT-3.5-turbo 模型对话
+- 支持使用 DALL·E 2 和 DALL·E 3 生成图像
+- 可配置的文本和图像生成参数
+- 完整的异步支持
+- 全面的错误处理和日志记录
 
-Add to `claude_desktop_config.json`:
+## 设置方法
+
+在 `claude_desktop_config.json` 中添加：
 
 ```json
 {
@@ -23,23 +29,35 @@ Add to `claude_desktop_config.json`:
 }
 ```
 
-## Development
+## 开发
 ```bash
-git clone https://github.com/pierrebrunelle/mcp-server-openai
+git clone https://github.com/[your-username]/mcp-server-openai
 cd mcp-server-openai
 pip install -e .
 ```
 
-## Testing
-```python
-# Run tests from project root
-pytest -v test_openai.py -s
+## 可用工具
 
-# Sample test output:
-Testing OpenAI API call...
-OpenAI Response: Hello! I'm doing well, thank you for asking...
-PASSED
+### 1. ask-openai
+查询 OpenAI 的语言模型，支持以下参数：
+- `query`: 您的问题或提示
+- `model`: 选择 "gpt-4" 或 "gpt-3.5-turbo"
+- `temperature`: 控制响应的随机性 (0-2)
+- `max_tokens`: 最大响应长度 (1-4000)
+
+### 2. create-image
+使用 DALL·E 生成图像，支持以下选项：
+- `prompt`: 您想要生成的图像描述
+- `model`: 选择 "dall-e-3" 或 "dall-e-2"
+- `size`: 图像尺寸 ("1024x1024", "512x512", "256x256")
+- `quality`: 图像质量 ("standard" 或 "hd")
+- `n`: 生成图像的数量 (1-10)
+
+## 测试
+```python
+# 在项目根目录运行测试
+pytest -v test_openai.py -s
 ```
 
-## License
-MIT License
+## 许可证
+MIT 许可证

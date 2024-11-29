@@ -23,11 +23,11 @@ def serve(openai_api_key: str) -> Server:
         return [
             types.Tool(
                 name="ask-openai",
-                description="Ask my assistant models a direct question",
+                description="向 OpenAI 助手模型提问",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "query": {"type": "string", "description": "Ask assistant"},
+                        "query": {"type": "string", "description": "提问内容"},
                         "model": {"type": "string", "default": "gpt-4", "enum": ["gpt-4", "gpt-3.5-turbo"]},
                         "temperature": {"type": "number", "default": 0.7, "minimum": 0, "maximum": 2},
                         "max_tokens": {"type": "integer", "default": 500, "minimum": 1, "maximum": 4000}
@@ -36,15 +36,16 @@ def serve(openai_api_key: str) -> Server:
                 }
             ),
             types.Tool(
-                name="generate-image",
-                description="Generate an image using DALL-E 3",
+                name="create-image",
+                description="使用 DALL·E 生成图像",
                 inputSchema={
                     "type": "object",
                     "properties": {
-                        "prompt": {"type": "string", "description": "Image generation prompt"},
-                        "size": {"type": "string", "default": "1024x1024", "enum": ["1024x1024", "1024x1792", "1792x1024"]},
+                        "prompt": {"type": "string", "description": "图像描述"},
+                        "model": {"type": "string", "default": "dall-e-3", "enum": ["dall-e-3", "dall-e-2"]},
+                        "size": {"type": "string", "default": "1024x1024", "enum": ["1024x1024", "512x512", "256x256"]},
                         "quality": {"type": "string", "default": "standard", "enum": ["standard", "hd"]},
-                        "style": {"type": "string", "default": "vivid", "enum": ["vivid", "natural"]}
+                        "n": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10}
                     },
                     "required": ["prompt"]
                 }
@@ -52,10 +53,10 @@ def serve(openai_api_key: str) -> Server:
         ]
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.Content]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent]:
         try:
             if not arguments:
-                raise ValueError("No arguments provided")
+                raise ValueError("未提供参数")
 
             if name == "ask-openai":
                 response = await connector.ask_openai(
@@ -64,27 +65,25 @@ def serve(openai_api_key: str) -> Server:
                     temperature=arguments.get("temperature", 0.7),
                     max_tokens=arguments.get("max_tokens", 500)
                 )
-                return [types.TextContent(type="text", text=f"OpenAI Response:\n{response}")]
+                return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
             
-            elif name == "generate-image":
-                image_data = await connector.generate_image(
+            elif name == "create-image":
+                image_urls = await connector.create_image(
                     prompt=arguments["prompt"],
+                    model=arguments.get("model", "dall-e-3"),
                     size=arguments.get("size", "1024x1024"),
                     quality=arguments.get("quality", "standard"),
-                    style=arguments.get("style", "vivid")
+                    n=arguments.get("n", 1)
                 )
-                return [
-                    types.ImageContent(
-                        type="image",
-                        format="image/png",
-                        data=image_data
-                    )
-                ]
+                return [types.TextContent(
+                    type="text", 
+                    text="生成的图像链接:\n" + "\n".join(f"- {url}" for url in image_urls)
+                )]
 
-            raise ValueError(f"Unknown tool: {name}")
+            raise ValueError(f"未知的工具: {name}")
         except Exception as e:
-            logger.error(f"Tool call failed: {str(e)}")
-            return [types.TextContent(type="text", text=f"Error: {str(e)}")]
+            logger.error(f"工具调用失败: {str(e)}")
+            return [types.TextContent(type="text", text=f"错误: {str(e)}")]
 
     return server
 
@@ -99,7 +98,7 @@ def main(openai_api_key: str):
                     read_stream, write_stream,
                     InitializationOptions(
                         server_name="openai-server",
-                        server_version="0.1.0",
+                        server_version="0.2.0",  # 更新版本号
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(),
                             experimental_capabilities={}
@@ -108,9 +107,9 @@ def main(openai_api_key: str):
                 )
         asyncio.run(_run())
     except KeyboardInterrupt:
-        logger.info("Server stopped by user")
+        logger.info("服务器被用户停止")
     except Exception as e:
-        logger.exception("Server failed")
+        logger.exception("服务器运行失败")
         sys.exit(1)
 
 if __name__ == "__main__":
