@@ -178,9 +178,7 @@ def main(openai_api_key: str):
                         server_name="openai-server",
                         server_version="0.3.2",
                         capabilities=server.get_capabilities(
-                            notification_options=NotificationOptions(
-                                progress=True
-                            ),
+                            notification_options=NotificationOptions(tools_changed=True),
                             experimental_capabilities={}
                         )
                     )
