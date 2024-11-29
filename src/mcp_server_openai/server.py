@@ -8,7 +8,8 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions, ProgressNotification
+from mcp.server.models import InitializationOptions
+from mcp.shared.notifications import ProgressNotification
 
 from .llm import LLMConnector
 
@@ -73,11 +74,6 @@ def serve(openai_api_key: str) -> Server:
             if not arguments:
                 raise ValueError("未提供参数")
 
-            request_context = server.request_context
-            progress_token = None
-            if request_context and request_context.meta and hasattr(request_context.meta, 'progressToken'):
-                progress_token = request_context.meta.progressToken
-
             if name == "ask-openai":
                 response = await connector.ask_openai(
                     query=arguments["query"],
@@ -99,16 +95,18 @@ def serve(openai_api_key: str) -> Server:
                 # 首先发送状态消息
                 response_contents = [types.TextContent(type="text", text=status_message)]
                 
-                if progress_token:
-                    await request_context.session.send_notification(
+                if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
+                    progress_token = server.request_context.meta.progressToken
+                    # 发送初始进度
+                    await server.request_context.session.send_notification(
                         "notifications/progress",
                         ProgressNotification(
                             progressToken=progress_token,
-                            progress=0.0,
-                            total=100.0
+                            progress=0,
+                            total=100
                         ).model_dump()
                     )
-                
+
                 image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
                     model=arguments.get("model", "dall-e-3"),
@@ -119,13 +117,14 @@ def serve(openai_api_key: str) -> Server:
                     max_retries=max_retries
                 )
                 
-                if progress_token:
-                    await request_context.session.send_notification(
+                if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
+                    # 发送完成进度
+                    await server.request_context.session.send_notification(
                         "notifications/progress",
                         ProgressNotification(
                             progressToken=progress_token,
-                            progress=100.0,
-                            total=100.0
+                            progress=100,
+                            total=100
                         ).model_dump()
                     )
                 
