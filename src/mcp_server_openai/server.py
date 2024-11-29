@@ -68,7 +68,7 @@ def serve(openai_api_key: str) -> Server:
         ]
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.Content]:
         try:
             if not arguments:
                 raise ValueError("未提供参数")
@@ -80,7 +80,7 @@ def serve(openai_api_key: str) -> Server:
                     temperature=arguments.get("temperature", 0.7),
                     max_tokens=arguments.get("max_tokens", 500)
                 )
-                return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
+                return [types.TextContent(text=f"OpenAI 回答:\n{response}")]
             
             elif name == "create-image":
                 timeout = arguments.get("timeout", 60.0)
@@ -90,6 +90,9 @@ def serve(openai_api_key: str) -> Server:
                     f'正在生成图像，超时时间设置为 {timeout} 秒'
                     f'{"，最多重试 " + str(max_retries) + " 次" if max_retries > 0 else ""}...'
                 )
+                
+                # 首先发送状态消息
+                response_contents = [types.TextContent(text=status_message)]
                 
                 image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
@@ -101,24 +104,22 @@ def serve(openai_api_key: str) -> Server:
                     max_retries=max_retries
                 )
                 
-                response_contents = [
+                # 添加生成完成的消息
+                response_contents.append(
                     types.TextContent(
-                        type="text",
                         text='已生成 {} 张图像，描述为："{}"'.format(
                             len(image_data_list),
                             arguments['prompt']
                         )
                     )
-                ]
+                )
                 
-                for idx, image_data in enumerate(image_data_list, 1):
+                # 添加图像内容
+                for image_data in image_data_list:
                     response_contents.append(
-                        types.TextContent(
-                            type="image",
-                            image={
-                                "data": base64.b64encode(image_data["data"]).decode('utf-8'),
-                                "mediaType": image_data["media_type"]
-                            }
+                        types.ImageContent(
+                            data=base64.b64encode(image_data["data"]).decode('utf-8'),
+                            mediaType=image_data["media_type"]
                         )
                     )
                 
@@ -128,12 +129,11 @@ def serve(openai_api_key: str) -> Server:
         except TimeoutError as e:
             logger.error(f"请求超时: {str(e)}")
             return [types.TextContent(
-                type="text",
                 text=f"错误: 生成图像请求超时。您可以尝试:\n1. 增加超时时间（timeout参数）\n2. 增加重试次数（max_retries参数）\n3. 简化图像描述\n\n详细错误: {str(e)}"
             )]
         except Exception as e:
             logger.error(f"工具调用失败: {str(e)}")
-            return [types.TextContent(type="text", text=f"错误: {str(e)}")]
+            return [types.TextContent(text=f"错误: {str(e)}")]
 
     return server
 
@@ -148,7 +148,7 @@ def main(openai_api_key: str):
                     read_stream, write_stream,
                     InitializationOptions(
                         server_name="openai-server",
-                        server_version="0.3.1",  # 更新版本号
+                        server_version="0.3.2",
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(),
                             experimental_capabilities={}
