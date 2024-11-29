@@ -95,38 +95,57 @@ def serve(openai_api_key: str) -> Server:
                 response_contents = [types.TextContent(type="text", text=status_message)]
                 
                 if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-                    progress_token = server.request_context.meta.progressToken
-                    # 发送初始进度
-                    progress_params = types.ProgressNotificationParams(
-                        progressToken=progress_token,
-                        progress=0,
-                        total=100
-                    )
-                    await server.request_context.session.send_notification(
-                        "notifications/progress",
-                        progress_params.model_dump()
-                    )
+                    try:
+                        progress_token = server.request_context.meta.progressToken
+                        # 发送初始进度
+                        await server.request_context.session.send_notification(
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=0,
+                                    total=100
+                                )
+                            )
+                        )
 
-                image_data_list = await connector.create_image(
-                    prompt=arguments["prompt"],
-                    model=arguments.get("model", "dall-e-3"),
-                    size=arguments.get("size", "1024x1024"),
-                    quality=arguments.get("quality", "standard"),
-                    n=arguments.get("n", 1),
-                    timeout=timeout,
-                    max_retries=max_retries
-                )
-                
-                if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-                    # 发送完成进度
-                    progress_params = types.ProgressNotificationParams(
-                        progressToken=progress_token,
-                        progress=100,
-                        total=100
-                    )
-                    await server.request_context.session.send_notification(
-                        "notifications/progress",
-                        progress_params.model_dump()
+                        image_data_list = await connector.create_image(
+                            prompt=arguments["prompt"],
+                            model=arguments.get("model", "dall-e-3"),
+                            size=arguments.get("size", "1024x1024"),
+                            quality=arguments.get("quality", "standard"),
+                            n=arguments.get("n", 1),
+                            timeout=timeout,
+                            max_retries=max_retries
+                        )
+                        
+                        # 发送完成进度
+                        await server.request_context.session.send_notification(
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=100,
+                                    total=100
+                                )
+                            )
+                        )
+                    except asyncio.CancelledError:
+                        # 处理取消请求
+                        logger.info("Request was cancelled")
+                        return [types.TextContent(type="text", text="请求已取消")]
+                    except Exception as e:
+                        logger.error(f"Error during image generation: {str(e)}")
+                        raise
+                else:
+                    image_data_list = await connector.create_image(
+                        prompt=arguments["prompt"],
+                        model=arguments.get("model", "dall-e-3"),
+                        size=arguments.get("size", "1024x1024"),
+                        quality=arguments.get("quality", "standard"),
+                        n=arguments.get("n", 1),
+                        timeout=timeout,
+                        max_retries=max_retries
                     )
                 
                 # 添加生成完成的消息
