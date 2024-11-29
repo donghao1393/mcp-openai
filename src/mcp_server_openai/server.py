@@ -9,23 +9,11 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
-from mcp.shared.session import BaseSession
 
 from .llm import LLMConnector
 
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
-
-# 增加最大消息大小限制到32MB
-MAX_MESSAGE_SIZE = 32 * 1024 * 1024
-
-def create_session(*args, **kwargs) -> BaseSession:
-    """创建一个自定义的会话，支持更大的消息大小"""
-    session = BaseSession(*args, **kwargs)
-    # 修改会话的消息大小限制
-    if hasattr(session, '_write_stream'):
-        session._write_stream._max_buffer_size = MAX_MESSAGE_SIZE
-    return session
 
 def serve(openai_api_key: str) -> Server:
     server = Server("openai-server")
@@ -107,6 +95,20 @@ def serve(openai_api_key: str) -> Server:
                 response_contents = [types.TextContent(type="text", text=status_message)]
                 
                 try:
+                    if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
+                        progress_token = server.request_context.meta.progressToken
+                        # 发送初始进度
+                        await server.request_context.session.send_notification(
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=0,
+                                    total=100
+                                )
+                            )
+                        )
+
                     # 尝试生成图像
                     image_data_list = await connector.create_image(
                         prompt=arguments["prompt"],
@@ -119,21 +121,17 @@ def serve(openai_api_key: str) -> Server:
                     )
 
                     if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-                        progress_token = server.request_context.meta.progressToken
-                        try:
-                            # 发送完成进度
-                            await server.request_context.session.send_notification(
-                                types.ProgressNotification(
-                                    method="notifications/progress",
-                                    params=types.ProgressNotificationParams(
-                                        progressToken=progress_token,
-                                        progress=100,
-                                        total=100
-                                    )
+                        # 发送完成进度
+                        await server.request_context.session.send_notification(
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=100,
+                                    total=100
                                 )
                             )
-                        except Exception as e:
-                            logger.warning(f"Failed to send progress notification: {e}")
+                        )
                     
                     # 添加生成完成的消息
                     response_contents.append(
@@ -146,17 +144,33 @@ def serve(openai_api_key: str) -> Server:
                         )
                     )
                     
-                    # 分批处理图像内容以避免超出消息大小限制
+                    # 分批处理图像内容，将大图像分割成较小的块
+                    MAX_CHUNK_SIZE = 512 * 1024  # 512KB per chunk
+
                     for image_data in image_data_list:
                         try:
+                            # 对图像数据进行 base64 编码
                             encoded_data = base64.b64encode(image_data["data"]).decode('utf-8')
-                            response_contents.append(
-                                types.ImageContent(
-                                    type="image",
-                                    data=encoded_data,
-                                    mimeType=image_data["media_type"]
+                            
+                            # 计算需要多少个块
+                            chunks = [encoded_data[i:i + MAX_CHUNK_SIZE] 
+                                    for i in range(0, len(encoded_data), MAX_CHUNK_SIZE)]
+                            
+                            # 处理每个块
+                            for i, chunk in enumerate(chunks):
+                                if len(chunks) > 1:
+                                    # 如果有多个块，添加索引信息到 MIME 类型
+                                    mime_type = f"{image_data['media_type']};chunk={i+1}/{len(chunks)}"
+                                else:
+                                    mime_type = image_data['media_type']
+                                
+                                response_contents.append(
+                                    types.ImageContent(
+                                        type="image",
+                                        data=chunk,
+                                        mimeType=mime_type
+                                    )
                                 )
-                            )
                         except Exception as e:
                             logger.error(f"Failed to process image data: {e}")
                             response_contents.append(
@@ -179,7 +193,7 @@ def serve(openai_api_key: str) -> Server:
                     )]
                 except Exception as e:
                     logger.error(f"Error during image generation: {e}")
-                    return [types.TextContent(type="text", text=f"生成图像时出错: {str(e)}")]
+                    raise
 
             raise ValueError(f"未知的工具: {name}")
         except Exception as e:
@@ -195,7 +209,6 @@ def main(openai_api_key: str):
         async def _run():
             async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                 server = serve(openai_api_key)
-                # 使用自定义会话创建函数
                 await server.run(
                     read_stream, write_stream,
                     InitializationOptions(
@@ -205,8 +218,7 @@ def main(openai_api_key: str):
                             notification_options=NotificationOptions(tools_changed=True),
                             experimental_capabilities={}
                         )
-                    ),
-                    session_factory=create_session
+                    )
                 )
         asyncio.run(_run())
     except KeyboardInterrupt:
