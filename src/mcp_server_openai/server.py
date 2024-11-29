@@ -79,7 +79,10 @@ def serve(openai_api_key: str) -> Server:
                 
                 # 构建包含图像和说明文字的响应
                 response_contents = [
-                    types.TextContent(type="text", text=f"已生成 {len(image_data_list)} 张图像，描述为："{arguments['prompt']}"")
+                    types.TextContent(type="text", text='已生成 {} 张图像，描述为："{}"'.format(
+                        len(image_data_list),
+                        arguments['prompt']
+                    ))
                 ]
                 
                 # 添加图像内容
@@ -114,7 +117,7 @@ def main(openai_api_key: str):
                     read_stream, write_stream,
                     InitializationOptions(
                         server_name="openai-server",
-                        server_version="0.3.0",  # 更新版本号
+                        server_version="0.3.0",
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(),
                             experimental_capabilities={}
