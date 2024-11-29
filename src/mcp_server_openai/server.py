@@ -3,6 +3,8 @@ import logging
 import sys
 import base64
 from typing import Optional
+from io import BytesIO
+from PIL import Image
 
 import click
 import mcp
@@ -12,8 +14,68 @@ from mcp.server.models import InitializationOptions
 
 from .llm import LLMConnector
 
-logging.basicConfig(level=logging.DEBUG)
+# 配置详细的日志记录
+logging.basicConfig(
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('mcp-server-openai.detailed.log')
+    ]
+)
 logger = logging.getLogger(__name__)
+
+def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[bytes, str]:
+    """
+    压缩图像数据以确保不超过指定大小
+    
+    Args:
+        image_data: 原始图像数据
+        max_size: 目标最大文件大小（默认750KB）
+        
+    Returns:
+        tuple[bytes, str]: (压缩后的图像数据, MIME类型)
+    """
+    # 记录原始大小
+    logger.debug(f"Original image size: {len(image_data)} bytes")
+    
+    try:
+        img = Image.open(BytesIO(image_data))
+        
+        # 如果原始大小已经足够小，直接返回
+        if len(image_data) <= max_size:
+            bio = BytesIO()
+            img.save(bio, format='PNG')
+            final_data = bio.getvalue()
+            logger.debug(f"Image already within size limit: {len(final_data)} bytes")
+            return final_data, 'image/png'
+            
+        # 初始化压缩参数
+        quality = 95
+        while quality > 30:  # 设置最低质量阈值
+            bio = BytesIO()
+            if img.mode in ('RGBA', 'LA') or (img.mode == 'P' and 'transparency' in img.info):
+                # 包含透明度的图像使用PNG
+                img.save(bio, format='PNG', optimize=True)
+                mime_type = 'image/png'
+            else:
+                # 其他图像使用JPEG
+                img.save(bio, format='JPEG', quality=quality, optimize=True)
+                mime_type = 'image/jpeg'
+            
+            final_data = bio.getvalue()
+            logger.debug(f"Compressed image size (quality={quality}): {len(final_data)} bytes")
+            
+            if len(final_data) <= max_size:
+                break
+                
+            quality -= 10
+            
+        return final_data, mime_type
+            
+    except Exception as e:
+        logger.error(f"Image compression failed: {str(e)}")
+        raise
 
 def serve(openai_api_key: str) -> Server:
     server = Server("openai-server")
@@ -91,25 +153,31 @@ def serve(openai_api_key: str) -> Server:
                     f'{"，最多重试 " + str(max_retries) + " 次" if max_retries > 0 else ""}...'
                 )
                 
+                logger.info(f"Starting image generation with parameters: {arguments}")
+                
                 # 首先发送状态消息
                 response_contents = [types.TextContent(type="text", text=status_message)]
                 
                 try:
                     if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
                         progress_token = server.request_context.meta.progressToken
-                        # 发送初始进度
-                        await server.request_context.session.send_notification(
-                            types.ProgressNotification(
-                                method="notifications/progress",
-                                params=types.ProgressNotificationParams(
-                                    progressToken=progress_token,
-                                    progress=0,
-                                    total=100
+                        try:
+                            # 发送初始进度
+                            await server.request_context.session.send_notification(
+                                types.ProgressNotification(
+                                    method="notifications/progress",
+                                    params=types.ProgressNotificationParams(
+                                        progressToken=progress_token,
+                                        progress=0,
+                                        total=100
+                                    )
                                 )
                             )
-                        )
+                        except Exception as e:
+                            logger.warning(f"Failed to send initial progress notification: {e}")
 
                     # 尝试生成图像
+                    logger.debug("Calling OpenAI to generate image...")
                     image_data_list = await connector.create_image(
                         prompt=arguments["prompt"],
                         model=arguments.get("model", "dall-e-3"),
@@ -119,19 +187,23 @@ def serve(openai_api_key: str) -> Server:
                         timeout=timeout,
                         max_retries=max_retries
                     )
+                    logger.debug(f"Received {len(image_data_list)} images from OpenAI")
 
                     if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-                        # 发送完成进度
-                        await server.request_context.session.send_notification(
-                            types.ProgressNotification(
-                                method="notifications/progress",
-                                params=types.ProgressNotificationParams(
-                                    progressToken=progress_token,
-                                    progress=100,
-                                    total=100
+                        try:
+                            # 发送完成进度
+                            await server.request_context.session.send_notification(
+                                types.ProgressNotification(
+                                    method="notifications/progress",
+                                    params=types.ProgressNotificationParams(
+                                        progressToken=progress_token,
+                                        progress=100,
+                                        total=100
+                                    )
                                 )
                             )
-                        )
+                        except Exception as e:
+                            logger.warning(f"Failed to send completion progress notification: {e}")
                     
                     # 添加生成完成的消息
                     response_contents.append(
@@ -144,46 +216,38 @@ def serve(openai_api_key: str) -> Server:
                         )
                     )
                     
-                    # 分批处理图像内容，将大图像分割成较小的块
-                    MAX_CHUNK_SIZE = 512 * 1024  # 512KB per chunk
-
-                    for image_data in image_data_list:
+                    # 处理每个图像
+                    for idx, image_data in enumerate(image_data_list, 1):
                         try:
-                            # 对图像数据进行 base64 编码
-                            encoded_data = base64.b64encode(image_data["data"]).decode('utf-8')
+                            logger.debug(f"Processing image {idx}/{len(image_data_list)}")
+                            # 压缩图像数据
+                            compressed_data, mime_type = compress_image_data(image_data["data"])
                             
-                            # 计算需要多少个块
-                            chunks = [encoded_data[i:i + MAX_CHUNK_SIZE] 
-                                    for i in range(0, len(encoded_data), MAX_CHUNK_SIZE)]
+                            # 进行base64编码
+                            encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+                            logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
                             
-                            # 处理每个块
-                            for i, chunk in enumerate(chunks):
-                                if len(chunks) > 1:
-                                    # 如果有多个块，添加索引信息到 MIME 类型
-                                    mime_type = f"{image_data['media_type']};chunk={i+1}/{len(chunks)}"
-                                else:
-                                    mime_type = image_data['media_type']
-                                
-                                response_contents.append(
-                                    types.ImageContent(
-                                        type="image",
-                                        data=chunk,
-                                        mimeType=mime_type
-                                    )
+                            response_contents.append(
+                                types.ImageContent(
+                                    type="image",
+                                    data=encoded_data,
+                                    mimeType=mime_type
                                 )
+                            )
                         except Exception as e:
-                            logger.error(f"Failed to process image data: {e}")
+                            logger.error(f"Failed to process image {idx}: {str(e)}", exc_info=True)
                             response_contents.append(
                                 types.TextContent(
                                     type="text",
-                                    text=f"处理图像数据时出错: {str(e)}"
+                                    text=f"处理第 {idx} 张图像时出错: {str(e)}"
                                 )
                             )
                             
+                    logger.info("Image generation and processing completed successfully")
                     return response_contents
                     
                 except asyncio.CancelledError:
-                    logger.info("Request was cancelled")
+                    logger.info("Request was cancelled by the client")
                     return [types.TextContent(type="text", text="请求已取消")]
                 except TimeoutError as e:
                     logger.error(f"Image generation timed out: {e}")
@@ -192,12 +256,12 @@ def serve(openai_api_key: str) -> Server:
                         text=f"错误: 生成图像请求超时。您可以尝试:\n1. 增加超时时间（timeout参数）\n2. 增加重试次数（max_retries参数）\n3. 简化图像描述\n\n详细错误: {str(e)}"
                     )]
                 except Exception as e:
-                    logger.error(f"Error during image generation: {e}")
-                    raise
+                    logger.error(f"Error during image generation: {str(e)}", exc_info=True)
+                    return [types.TextContent(type="text", text=f"生成图像时出错: {str(e)}")]
 
             raise ValueError(f"未知的工具: {name}")
         except Exception as e:
-            logger.error(f"工具调用失败: {str(e)}")
+            logger.error(f"Tool call failed: {str(e)}", exc_info=True)
             return [types.TextContent(type="text", text=f"错误: {str(e)}")]
 
     return server
