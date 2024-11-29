@@ -46,7 +46,21 @@ def serve(openai_api_key: str) -> Server:
                         "model": {"type": "string", "default": "dall-e-3", "enum": ["dall-e-3", "dall-e-2"]},
                         "size": {"type": "string", "default": "1024x1024", "enum": ["1024x1024", "512x512", "256x256"]},
                         "quality": {"type": "string", "default": "standard", "enum": ["standard", "hd"]},
-                        "n": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10}
+                        "n": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10},
+                        "timeout": {
+                            "type": "number",
+                            "default": 60.0,
+                            "minimum": 30.0,
+                            "maximum": 300.0,
+                            "description": "请求超时时间（秒）"
+                        },
+                        "max_retries": {
+                            "type": "integer",
+                            "default": 3,
+                            "minimum": 0,
+                            "maximum": 5,
+                            "description": "超时后最大重试次数"
+                        }
                     },
                     "required": ["prompt"]
                 }
@@ -69,23 +83,34 @@ def serve(openai_api_key: str) -> Server:
                 return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
             
             elif name == "create-image":
+                timeout = arguments.get("timeout", 60.0)
+                max_retries = arguments.get("max_retries", 3)
+                
+                status_message = (
+                    f'正在生成图像，超时时间设置为 {timeout} 秒'
+                    f'{"，最多重试 " + str(max_retries) + " 次" if max_retries > 0 else ""}...'
+                )
+                
                 image_data_list = await connector.create_image(
                     prompt=arguments["prompt"],
                     model=arguments.get("model", "dall-e-3"),
                     size=arguments.get("size", "1024x1024"),
                     quality=arguments.get("quality", "standard"),
-                    n=arguments.get("n", 1)
+                    n=arguments.get("n", 1),
+                    timeout=timeout,
+                    max_retries=max_retries
                 )
                 
-                # 构建包含图像和说明文字的响应
                 response_contents = [
-                    types.TextContent(type="text", text='已生成 {} 张图像，描述为："{}"'.format(
-                        len(image_data_list),
-                        arguments['prompt']
-                    ))
+                    types.TextContent(
+                        type="text",
+                        text='已生成 {} 张图像，描述为："{}"'.format(
+                            len(image_data_list),
+                            arguments['prompt']
+                        )
+                    )
                 ]
                 
-                # 添加图像内容
                 for idx, image_data in enumerate(image_data_list, 1):
                     response_contents.append(
                         types.TextContent(
@@ -100,6 +125,12 @@ def serve(openai_api_key: str) -> Server:
                 return response_contents
 
             raise ValueError(f"未知的工具: {name}")
+        except TimeoutError as e:
+            logger.error(f"请求超时: {str(e)}")
+            return [types.TextContent(
+                type="text",
+                text=f"错误: 生成图像请求超时。您可以尝试:\n1. 增加超时时间（timeout参数）\n2. 增加重试次数（max_retries参数）\n3. 简化图像描述\n\n详细错误: {str(e)}"
+            )]
         except Exception as e:
             logger.error(f"工具调用失败: {str(e)}")
             return [types.TextContent(type="text", text=f"错误: {str(e)}")]
@@ -117,7 +148,7 @@ def main(openai_api_key: str):
                     read_stream, write_stream,
                     InitializationOptions(
                         server_name="openai-server",
-                        server_version="0.3.0",
+                        server_version="0.3.1",  # 更新版本号
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(),
                             experimental_capabilities={}
