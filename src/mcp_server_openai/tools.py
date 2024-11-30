@@ -6,7 +6,7 @@ MCP Server OpenAI tools模块
 import logging
 import asyncio
 import base64
-from typing import List, Optional
+from typing import List, Optional, Any
 
 import mcp.types as types
 from .image_utils import compress_image_data
