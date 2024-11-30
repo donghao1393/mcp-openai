@@ -6,7 +6,7 @@ MCP Server OpenAI 主服务器模块
 import asyncio
 import logging
 import sys
-from typing import List, Optional
+from typing import List, Optional, Union, Dict, Any
 
 import click
 import mcp
@@ -30,31 +30,18 @@ logger = logging.getLogger(__name__)
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
     
-    async def _received_notification(self, notification):
+    async def _received_notification(self, notification: Union[dict, Any]):
         """处理收到的通知"""
         try:
+            # 防止空通知
+            if not notification:
+                logger.debug("Received empty notification")
+                return
+                
             # 处理取消通知
             if isinstance(notification, dict) and notification.get("method") == "cancelled":
-                try:
-                    params = notification.get("params", {})
-                    request_id = str(params.get("requestId", "unknown"))
-                    reason = str(params.get("reason", "Operation cancelled"))
-                    
-                    # 转换为进度通知
-                    progress_notification = types.ProgressNotification(
-                        method="notifications/progress",
-                        params=types.ProgressNotificationParams(
-                            progressToken=request_id,
-                            progress=1.0,
-                            message=reason
-                        )
-                    )
-                    
-                    await self._session.send_notification(types.ServerNotification(progress_notification))
-                    return
-                except Exception as e:
-                    logger.warning(f"Error converting cancel to progress: {e}")
-                    return
+                await self._handle_cancelled_notification(notification)
+                return
             
             # 处理其他通知
             try:
@@ -64,9 +51,39 @@ class OpenAIServer(Server):
             except Exception as e:
                 logger.warning(f"Error in standard notification: {e}")
                 
+        except BrokenResourceError:
+            logger.debug("Connection was closed while handling notification")
         except Exception as e:
             # 记录但不传播异常
             logger.warning(f"Error in notification handling: {e}")
+
+    async def _handle_cancelled_notification(self, notification: dict):
+        """专门处理取消通知的方法"""
+        try:
+            params = notification.get("params", {})
+            request_id = str(params.get("requestId", "unknown"))
+            reason = str(params.get("reason", "Operation cancelled"))
+            
+            # 构造进度通知
+            progress_notification = types.ProgressNotification(
+                method="notifications/progress",
+                params=types.ProgressNotificationParams(
+                    progressToken=request_id,
+                    progress=1.0,  # 表示完成
+                    message=reason
+                )
+            )
+            
+            # 安全发送通知
+            await safe_send_notification(
+                self._session,
+                types.ServerNotification(progress_notification),
+                convert_cancelled=False  # 已经是转换后的通知了
+            )
+        except ValidationError as e:
+            logger.debug(f"Validation error converting cancel to progress: {e}")
+        except Exception as e:
+            logger.warning(f"Error handling cancelled notification: {e}")
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
@@ -143,24 +160,23 @@ async def run_server(server: OpenAIServer, read_stream, write_stream):
                     logger.error(f"Error in group: {exc}", exc_info=True)
         else:
             logger.error(f"Server error: {e}", exc_info=True)
-            raise
+
+async def _run():
+    """服务器启动的核心异步函数"""
+    try:
+        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            server = serve(sys.argv[1] if len(sys.argv) > 1 else None)
+            await run_server(server, read_stream, write_stream)
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
+        raise
 
 @click.command()
 @click.option("--openai-api-key", envvar="OPENAI_API_KEY", required=True)
 def main(openai_api_key: str):
     """MCP OpenAI服务器入口函数"""
     try:
-        async def _run():
-            try:
-                async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-                    server = serve(openai_api_key)
-                    await run_server(server, read_stream, write_stream)
-            except Exception as e:
-                logger.error(f"Fatal error: {e}", exc_info=True)
-                raise
-
         asyncio.run(_run())
-        
     except KeyboardInterrupt:
         logger.info("服务器被用户停止")
         sys.exit(0)
