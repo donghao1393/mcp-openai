@@ -116,6 +116,16 @@ def serve(openai_api_key: str) -> OpenAIServer:
 async def run_server(server: OpenAIServer) -> None:
     """运行服务器的核心逻辑"""
     try:
+        # 设置实验性功能，声明支持取消通知
+        experimental_capabilities = {
+            "messageSize": {
+                "maxMessageBytes": 32 * 1024 * 1024  # 32MB
+            },
+            "notifications": {
+                "cancelled": True  # 声明支持取消通知
+            }
+        }
+
         async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
             # 启动服务器
             await server.run(
@@ -125,10 +135,8 @@ async def run_server(server: OpenAIServer) -> None:
                     server_name="openai-server",
                     server_version="0.3.2",
                     capabilities=server.get_capabilities(
-                        notification_options=NotificationOptions(
-                            tools_changed=True,
-                            cancelled=True  # 在NotificationOptions中正确声明支持cancelled
-                        )
+                        notification_options=NotificationOptions(tools_changed=True),
+                        experimental_capabilities=experimental_capabilities
                     )
                 )
             )
