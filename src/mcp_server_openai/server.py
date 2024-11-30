@@ -6,7 +6,7 @@ MCP Server OpenAI 主服务器模块
 import asyncio
 import logging
 import sys
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 import click
 import mcp
@@ -15,7 +15,7 @@ from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
 from mcp.shared.session import RequestResponder
 from anyio import BrokenResourceError, ClosedResourceError
-from pydantic import ValidationError
+from pydantic import ValidationError, BaseModel
 
 from .llm import LLMConnector
 from .tools import get_tool_definitions, handle_ask_openai, handle_create_image
@@ -26,6 +26,16 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+class CancelledNotificationParams(BaseModel):
+    """取消通知的参数模型"""
+    requestId: int
+    reason: Optional[str] = None
+
+class CancelledNotification(BaseModel):
+    """取消通知的模型"""
+    method: str = "notifications/cancelled"
+    params: CancelledNotificationParams
 
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
@@ -40,7 +50,7 @@ class OpenAIServer(Server):
 
             # 2. 处理客户端通知
             if isinstance(message, types.ClientNotification):
-                await self._received_notification(message)
+                await self._handle_notification(message)
                 return
 
             # 3. 处理其他消息类型
@@ -58,24 +68,64 @@ class OpenAIServer(Server):
         except Exception as e:
             logger.error(f"Unexpected error during message handling: {e}", exc_info=True)
 
-    async def _received_notification(self, notification: types.ClientNotification) -> None:
-        """处理收到的通知的改进逻辑"""
+    async def _handle_notification(self, notification: Any) -> None:
+        """处理通知的增强逻辑"""
         try:
-            match notification.method:
+            # 预处理通知数据
+            raw_data = {
+                "method": getattr(notification, "method", None),
+                "params": getattr(notification, "params", None)
+            }
+
+            if not raw_data["method"]:
+                logger.error("Invalid notification: missing method")
+                return
+
+            # 根据通知类型分别处理
+            match raw_data["method"]:
                 case "notifications/progress":
-                    if hasattr(notification.params, 'progressToken') and hasattr(notification.params, 'progress'):
-                        logger.debug(f"Progress notification: token={notification.params.progressToken}, progress={notification.params.progress}")
+                    await self._handle_progress_notification(notification)
                 case "notifications/initialized":
                     logger.debug("Server initialized notification")
                 case "notifications/roots/list_changed":
                     logger.debug("Roots list changed notification")
                 case "notifications/cancelled":
-                    if hasattr(notification.params, 'requestId'):
-                        logger.info(f"Request {notification.params.requestId} cancelled")
+                    await self._handle_cancelled_notification(raw_data)
                 case _:
-                    logger.warning(f"Unknown notification method: {notification.method}")
+                    logger.warning(f"Unknown notification method: {raw_data['method']}")
+
+        except ValidationError as e:
+            logger.error(f"Notification validation error: {e.errors()}")
         except Exception as e:
             logger.error(f"Error handling notification: {e}", exc_info=True)
+
+    async def _handle_progress_notification(self, notification: types.ProgressNotification) -> None:
+        """处理进度通知"""
+        try:
+            if hasattr(notification.params, 'progressToken') and hasattr(notification.params, 'progress'):
+                logger.debug(
+                    f"Progress notification: token={notification.params.progressToken}, "
+                    f"progress={notification.params.progress}"
+                )
+        except Exception as e:
+            logger.error(f"Error handling progress notification: {e}", exc_info=True)
+
+    async def _handle_cancelled_notification(self, raw_data: Dict[str, Any]) -> None:
+        """处理取消通知"""
+        try:
+            # 使用自定义模型验证取消通知
+            notification = CancelledNotification(
+                method=raw_data["method"],
+                params=CancelledNotificationParams(**raw_data["params"])
+            )
+            logger.info(
+                f"Request {notification.params.requestId} cancelled"
+                f"{f': {notification.params.reason}' if notification.params.reason else ''}"
+            )
+        except ValidationError as e:
+            logger.error(f"Invalid cancelled notification format: {e.errors()}")
+        except Exception as e:
+            logger.error(f"Error handling cancelled notification: {e}", exc_info=True)
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
