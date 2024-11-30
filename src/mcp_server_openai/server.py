@@ -30,21 +30,30 @@ async def safe_send_notification(session, notification):
     except Exception as e:
         logger.warning(f"Failed to send notification: {e}")
 
-def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[bytes, str]:
+def compress_image_data(image_data: bytes, max_size: int = 512 * 1024) -> tuple[bytes, str]:
     """
-    压缩图像数据
+    压缩图像数据，目标大小为512KB
     """
     logger.debug(f"Original image size: {len(image_data)} bytes")
     
     try:
         img = Image.open(BytesIO(image_data))
         
+        # 如果原始大小已经足够小，直接返回PNG格式
         if len(image_data) <= max_size:
             bio = BytesIO()
             img.save(bio, format='PNG')
             final_data = bio.getvalue()
             logger.debug(f"Image already within size limit: {len(final_data)} bytes")
             return final_data, 'image/png'
+        
+        # 首先尝试调整图像尺寸
+        max_dimension = 1024
+        ratio = min(max_dimension / img.width, max_dimension / img.height)
+        if ratio < 1:
+            new_width = int(img.width * ratio)
+            new_height = int(img.height * ratio)
+            img = img.resize((new_width, new_height), Image.LANCZOS)
             
         quality = 95
         while quality > 30:
@@ -71,7 +80,7 @@ def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[
         raise
 
 def serve(openai_api_key: str) -> Server:
-    server = Server("openai-server")
+    server = Server("openai-server", max_message_size=32 * 1024 * 1024)  # 设置最大消息大小为32MB
     connector = LLMConnector(openai_api_key)
 
     @server.list_tools()
@@ -204,12 +213,11 @@ def serve(openai_api_key: str) -> Server:
                         try:
                             logger.debug(f"Processing image {idx}/{len(image_data_list)}")
                             
-                            # 处理压缩版本
+                            # 只处理一个压缩版本的图像
                             compressed_data, mime_type = compress_image_data(image_data["data"])
                             encoded_data = base64.b64encode(compressed_data).decode('utf-8')
                             logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
 
-                            # 添加压缩版本用于预览
                             response_contents.append(
                                 types.ImageContent(
                                     type="image",
@@ -218,27 +226,10 @@ def serve(openai_api_key: str) -> Server:
                                 )
                             )
 
-                            # 添加分隔提示
                             response_contents.append(
                                 types.TextContent(
                                     type="text",
-                                    text="\n以下是原图版本（加载可能较慢）："
-                                )
-                            )
-                            
-                            # 添加原始图像数据
-                            response_contents.append(
-                                types.ImageContent(
-                                    type="image",
-                                    data=base64.b64encode(image_data["data"]).decode('utf-8'),
-                                    mimeType=image_data["media_type"]
-                                )
-                            )
-
-                            response_contents.append(
-                                types.TextContent(
-                                    type="text",
-                                    text=f"\n▲ 已显示第 {idx} 张图片的预览版本与原图。预览版本经过压缩以提升加载速度，原图保持了完整的画质。\n{'-' * 50}"
+                                    text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
                                 )
                             )
 
