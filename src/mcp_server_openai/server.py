@@ -13,14 +13,10 @@ import anyio
 
 # ... [其他导入保持不变]
 
-# 配置日志记录（改为文件优先，避免 stdout 关闭影响日志记录）
+# 配置日志记录
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
-    handlers=[
-        logging.FileHandler('openai_server.log'),  # 文件日志放在第一位
-        logging.StreamHandler()  # stdout 日志放在第二位
-    ]
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
 
@@ -99,11 +95,5 @@ async def run_server(server: OpenAIServer) -> None:
             await server.shutdown()
         except Exception as e:
             logger.error(f"Error during final shutdown: {e}", exc_info=True)
-        
-        # 确保日志被写入
-        for handler in logging.getLogger().handlers:
-            handler.flush()
-            if isinstance(handler, logging.FileHandler):
-                handler.close()
 
 # ... [其余代码保持不变]
