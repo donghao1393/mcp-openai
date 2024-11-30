@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 import mcp.server as server
 import mcp.types as types
@@ -36,11 +36,11 @@ class OpenAIServer(server.Server):
         # 设置工具定义
         self._tools = get_tool_definitions()
         
-    async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[types.Content]:
+    async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理OpenAI问答请求"""
         return await handle_ask_openai(self.connector, arguments)
         
-    async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[types.Content]:
+    async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理图像生成请求"""
         return await handle_create_image(self, self.connector, arguments)
         
