@@ -276,28 +276,35 @@ def main(openai_api_key: str):
         async def _run():
             async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                 server = serve(openai_api_key)
-                # 设置服务器的最大消息大小为32MB
-                experimental_capabilities = {
-                    "messageSize": {
-                        "maxMessageBytes": 32 * 1024 * 1024
+                try:
+                    # 设置服务器的最大消息大小为32MB
+                    experimental_capabilities = {
+                        "messageSize": {
+                            "maxMessageBytes": 32 * 1024 * 1024
+                        }
                     }
-                }
-                await server.run(
-                    read_stream, write_stream,
-                    InitializationOptions(
-                        server_name="openai-server",
-                        server_version="0.3.2",
-                        capabilities=server.get_capabilities(
-                            notification_options=NotificationOptions(tools_changed=True),
-                            experimental_capabilities=experimental_capabilities
+                    await server.run(
+                        read_stream, write_stream,
+                        InitializationOptions(
+                            server_name="openai-server",
+                            server_version="0.3.2",
+                            capabilities=server.get_capabilities(
+                                notification_options=NotificationOptions(tools_changed=True),
+                                experimental_capabilities=experimental_capabilities
+                            )
                         )
                     )
-                )
+                except* Exception as e:
+                    # 忽略会话关闭时的取消通知验证错误
+                    if not any('cancelled' in str(err) for err in e.exceptions):
+                        raise
+                    logger.debug("Session closed normally with cancellation")
+
         asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("服务器被用户停止")
     except Exception as e:
-        logger.exception("服务器运行失败")
+        logger.error("服务器运行失败", exc_info=True)
         sys.exit(1)
 
 if __name__ == "__main__":
