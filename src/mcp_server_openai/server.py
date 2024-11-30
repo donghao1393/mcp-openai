@@ -36,12 +36,16 @@ class OpenAIServer(Server):
                 logger.debug("Received empty notification")
                 return
                 
-            # 处理取消通知 (直接转换为进度通知)
-            if isinstance(notification, dict) and notification.get("method") == "cancelled":
-                await self._handle_progress_update(notification)
+            # 对于非标准的通知，只记录日志
+            if isinstance(notification, dict) and notification.get("method") not in [
+                "notifications/progress",
+                "notifications/initialized",
+                "notifications/roots/list_changed"
+            ]:
+                logger.debug(f"Received non-standard notification: {notification.get('method')}")
                 return
             
-            # 其他通知通过父类处理
+            # 标准通知通过父类处理
             await super()._received_notification(notification)
                 
         except BrokenResourceError:
@@ -50,34 +54,6 @@ class OpenAIServer(Server):
             logger.debug(f"Validation error in notification handling: {e}")
         except Exception as e:
             logger.warning(f"Unexpected error in notification handling: {e}")
-
-    async def _handle_progress_update(self, notification: Dict[str, Any]) -> None:
-        """将任何进度相关通知转换为标准的进度通知"""
-        try:
-            params = notification.get("params", {})
-            request_id = str(params.get("requestId", "unknown"))
-            message = str(params.get("reason", "Operation status update"))
-
-            # 创建标准的进度通知
-            progress_notification = types.ProgressNotification(
-                method="notifications/progress",
-                params=types.ProgressNotificationParams(
-                    progressToken=request_id,
-                    progress=1.0,  # 对于取消/完成的情况，进度为100%
-                    message=message
-                )
-            )
-            
-            # 通过会话发送通知
-            if self._session:
-                await self._session.send_notification(types.ServerNotification(progress_notification))
-            else:
-                logger.warning("No active session to send notification")
-                
-        except ValidationError as e:
-            logger.debug(f"Failed to create progress notification: {e}")
-        except Exception as e:
-            logger.warning(f"Error sending progress update: {e}")
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""

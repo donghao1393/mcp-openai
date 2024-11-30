@@ -16,37 +16,12 @@ from anyio import BrokenResourceError, ClosedResourceError
 
 logger = logging.getLogger(__name__)
 
-def create_progress_notification(
-    request_id: str, 
-    progress: float = 1.0,
-    message: str | None = None
-) -> ProgressNotification:
-    """
-    创建一个标准的进度通知
-    
-    Args:
-        request_id: 请求ID
-        progress: 进度值 (0-1)
-        message: 可选的消息
-        
-    Returns:
-        ProgressNotification: 进度通知对象
-    """
-    return ProgressNotification(
-        method="notifications/progress",
-        params=ProgressNotificationParams(
-            progressToken=request_id,
-            progress=min(max(progress, 0.0), 1.0),  # 确保在0-1之间
-            message=message or ""
-        )
-    )
-
 async def safe_send_notification(
     session: Any,
     notification: Notification | ServerNotification,
 ) -> bool:
     """
-    安全地发送通知，捕获并记录任何错误
+    安全地发送标准MCP通知，捕获并记录任何错误
     
     Args:
         session: 当前会话
@@ -56,12 +31,10 @@ async def safe_send_notification(
         bool: 通知是否成功发送
     """
     try:
-        # 检查session是否有效
         if not session or not hasattr(session, 'send_notification'):
             logger.warning("Invalid session for sending notification")
             return False
 
-        # 发送通知
         await session.send_notification(notification)
         return True
 
