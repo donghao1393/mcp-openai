@@ -36,22 +36,32 @@ class OpenAIServer(Server):
             # 尝试将通知作为取消通知处理
             if getattr(notification, "method", None) == "cancelled":
                 try:
-                    cancelled = CancelledNotification(
-                        method="cancelled",
-                        params=CancelledParams(**notification.params)
-                    )
-                    # 转换为标准的progress通知格式
-                    await self._session.send_notification(types.ProgressNotification(
+                    # 直接从通知数据构建参数，不进行中间转换
+                    progress_notification = types.ProgressNotification(
                         method="notifications/progress",
                         params=types.ProgressNotificationParams(
-                            progressToken=str(cancelled.params.requestId),
+                            progressToken=str(notification.params.get("requestId", "unknown")),
                             progress=1.0,  # 表示完成
-                            message=cancelled.params.reason or "Operation cancelled"
+                            message=notification.params.get("reason", "Operation cancelled")
                         )
-                    ))
+                    )
+                    await self._session.send_notification(progress_notification)
                     return
-                except ValidationError as e:
-                    logger.warning(f"Invalid cancellation notification: {e}")
+                except Exception as e:
+                    logger.warning(f"Error converting cancelled notification: {e}", exc_info=True)
+                    # 如果转换失败，尝试发送一个基本的进度通知
+                    try:
+                        await self._session.send_notification(types.ProgressNotification(
+                            method="notifications/progress",
+                            params=types.ProgressNotificationParams(
+                                progressToken="error",
+                                progress=1.0,
+                                message="Operation completed with errors"
+                            )
+                        ))
+                    except Exception as e2:
+                        logger.error(f"Failed to send fallback notification: {e2}")
+                    return
                     
             # 如果不是取消通知，按常规方式处理
             await super()._received_notification(notification)
@@ -84,7 +94,8 @@ def serve(openai_api_key: str) -> OpenAIServer:
                             progress=1.0,
                             message="Cleaning up session"
                         )
-                    )
+                    ),
+                    convert_cancelled=False  # 避免在清理时再次转换
                 )
         except Exception as e:
             logger.debug(f"Cleanup error: {e}")
