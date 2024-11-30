@@ -40,10 +40,18 @@ class OpenAIServer(Server):
                         method="cancelled",
                         params=CancelledParams(**notification.params)
                     )
-                    logger.debug(f"Received cancellation: {cancelled}")
+                    # 转换为标准的progress通知格式
+                    await self._session.send_notification(types.ProgressNotification(
+                        method="notifications/progress",
+                        params=types.ProgressNotificationParams(
+                            progressToken=str(cancelled.params.requestId),
+                            progress=1.0,  # 表示完成
+                            message=cancelled.params.reason or "Operation cancelled"
+                        )
+                    ))
                     return
-                except ValidationError:
-                    pass
+                except ValidationError as e:
+                    logger.warning(f"Invalid cancellation notification: {e}")
                     
             # 如果不是取消通知，按常规方式处理
             await super()._received_notification(notification)
@@ -73,8 +81,8 @@ def serve(openai_api_key: str) -> OpenAIServer:
                         method="notifications/progress",
                         params=types.ProgressNotificationParams(
                             progressToken="cleanup",
-                            progress=100,
-                            total=100
+                            progress=1.0,
+                            message="Cleaning up session"
                         )
                     )
                 )
