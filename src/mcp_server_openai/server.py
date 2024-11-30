@@ -13,7 +13,7 @@ import anyio
 
 import mcp.server
 import mcp.server.stdio
-from mcp.server.models import InitializationOptions, NotificationOptions
+from mcp.server.models import InitializationOptions
 from mcp.server.session import BrokenResourceError, ClosedResourceError
 from .openai import OpenAIServer  # 从当前包导入OpenAIServer
 
@@ -65,16 +65,17 @@ async def run_server(server: OpenAIServer) -> None:
             try:
                 async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                     # 启动服务器
+                    capabilities = server.get_capabilities()
+                    # 添加实验性功能
+                    capabilities.experimental = experimental_capabilities
+                    
                     await server.run(
                         read_stream,
                         write_stream,
                         InitializationOptions(
                             server_name="openai-server",
                             server_version="0.3.2",
-                            capabilities=server.get_capabilities(
-                                notification_options=NotificationOptions(tools_changed=True),
-                                experimental_capabilities=experimental_capabilities
-                            )
+                            capabilities=capabilities
                         )
                     )
             except (BrokenResourceError, ClosedResourceError) as e:
