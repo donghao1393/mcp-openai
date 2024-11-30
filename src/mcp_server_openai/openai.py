@@ -35,23 +35,44 @@ class OpenAIServer(server.Server):
         
         # 设置工具定义
         self._tools = get_tool_definitions()
-        
-    @server.Server.call_tool()
-    async def handle_call_tool(
-        self,
-        name: str,
-        arguments: Dict[str, Any]
-    ) -> Sequence[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
-        """处理工具调用"""
-        if name not in self.handlers:
-            raise ValueError(f"未知的工具: {name}")
-            
-        handler = self.handlers[name]
-        if name == "create-image":
-            return await handler(self, self.connector, arguments)
-        return await handler(self.connector, arguments)
 
-    @server.Server.list_tools()
+        # 注册工具处理方法
+        self.request_handlers[types.CallToolRequest] = self._handle_tool_request
+        
+    async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
+        """处理OpenAI问答请求"""
+        return await handle_ask_openai(self.connector, arguments)
+        
+    async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
+        """处理图像生成请求"""
+        return await handle_create_image(self, self.connector, arguments)
+
+    async def _handle_tool_request(self, req: types.CallToolRequest) -> types.ServerResult:
+        """内部工具请求处理器"""
+        try:
+            if req.params.name not in self.handlers:
+                raise ValueError(f"未知的工具: {req.params.name}")
+                
+            handler = self.handlers[req.params.name]
+            if req.params.name == "create-image":
+                results = await handler(self, self.connector, req.params.arguments or {})
+            else:
+                results = await handler(self.connector, req.params.arguments or {})
+                
+            return types.ServerResult(
+                types.CallToolResult(content=list(results), isError=False)
+            )
+            
+        except Exception as e:
+            logger.error(f"工具调用错误: {e}", exc_info=True)
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[types.TextContent(type="text", text=str(e))],
+                    isError=True
+                )
+            )
+
+    @server.Server.list_tools()  # 这个装饰器可以保留，因为它在SDK中有正确实现
     async def handle_list_tools(self) -> List[types.Tool]:
         """返回支持的工具列表"""
         return self._tools
