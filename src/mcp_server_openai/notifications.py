@@ -1,14 +1,13 @@
 """
 MCP Server OpenAI notifications模块
-定义了服务器使用的各种通知类型和通知相关的工具函数
+定义了服务器使用的通知相关的工具函数
 """
 
 import logging
-from typing import Literal, Union, Any
-from pydantic import BaseModel, ValidationError
+from typing import Any
+from pydantic import ValidationError
 from mcp.types import (
-    Notification, 
-    NotificationParams, 
+    Notification,
     ServerNotification,
     ProgressNotification, 
     ProgressNotificationParams
@@ -17,23 +16,13 @@ from anyio import BrokenResourceError, ClosedResourceError
 
 logger = logging.getLogger(__name__)
 
-class CancelledParams(NotificationParams):
-    """取消通知的参数"""
-    requestId: int
-    reason: str | None = None
-
-class CancelledNotification(Notification[CancelledParams, Literal["cancelled"]]):
-    """请求取消的通知"""
-    method: Literal["cancelled"] = "cancelled"
-    params: CancelledParams
-
 def create_progress_notification(
-    request_id: Union[int, str], 
-    progress: float = 1.0, 
+    request_id: str, 
+    progress: float = 1.0,
     message: str | None = None
 ) -> ProgressNotification:
     """
-    创建一个进度通知
+    创建一个标准的进度通知
     
     Args:
         request_id: 请求ID
@@ -46,7 +35,7 @@ def create_progress_notification(
     return ProgressNotification(
         method="notifications/progress",
         params=ProgressNotificationParams(
-            progressToken=str(request_id),
+            progressToken=request_id,
             progress=min(max(progress, 0.0), 1.0),  # 确保在0-1之间
             message=message or ""
         )
@@ -54,8 +43,7 @@ def create_progress_notification(
 
 async def safe_send_notification(
     session: Any,
-    notification: Union[Notification, ServerNotification, dict],
-    convert_cancelled: bool = True
+    notification: Notification | ServerNotification,
 ) -> bool:
     """
     安全地发送通知，捕获并记录任何错误
@@ -63,7 +51,6 @@ async def safe_send_notification(
     Args:
         session: 当前会话
         notification: 要发送的通知
-        convert_cancelled: 是否将cancelled通知转换为progress通知
         
     Returns:
         bool: 通知是否成功发送
@@ -73,15 +60,6 @@ async def safe_send_notification(
         if not session or not hasattr(session, 'send_notification'):
             logger.warning("Invalid session for sending notification")
             return False
-
-        # 将字典转换为通知对象
-        if isinstance(notification, dict):
-            if notification.get("method") == "cancelled" and convert_cancelled:
-                params = notification.get("params", {})
-                notification = create_progress_notification(
-                    request_id=params.get("requestId", "unknown"),
-                    message=params.get("reason")
-                )
 
         # 发送通知
         await session.send_notification(notification)

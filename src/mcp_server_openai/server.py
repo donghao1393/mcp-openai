@@ -6,18 +6,17 @@ MCP Server OpenAI 主服务器模块
 import asyncio
 import logging
 import sys
-from typing import List, Optional, Union, Dict, Any
+from typing import Any, Dict
 
 import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
-from anyio import BrokenResourceError, ClosedResourceError, create_task_group
+from anyio import BrokenResourceError, ClosedResourceError
 from pydantic import ValidationError
 
 from .llm import LLMConnector
-from .notifications import CancelledNotification, CancelledParams, safe_send_notification
 from .tools import get_tool_definitions, handle_ask_openai, handle_create_image
 
 # 配置日志记录
@@ -30,60 +29,55 @@ logger = logging.getLogger(__name__)
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
     
-    async def _received_notification(self, notification: Union[dict, Any]):
+    async def _received_notification(self, notification: Dict[str, Any]) -> None:
         """处理收到的通知"""
         try:
-            # 防止空通知
             if not notification:
                 logger.debug("Received empty notification")
                 return
                 
-            # 处理取消通知
+            # 处理取消通知 (直接转换为进度通知)
             if isinstance(notification, dict) and notification.get("method") == "cancelled":
-                await self._handle_cancelled_notification(notification)
+                await self._handle_progress_update(notification)
                 return
             
-            # 处理其他通知
-            try:
-                await super()._received_notification(notification)
-            except ValidationError as e:
-                logger.debug(f"Validation error in standard notification: {e}")
-            except Exception as e:
-                logger.warning(f"Error in standard notification: {e}")
+            # 其他通知通过父类处理
+            await super()._received_notification(notification)
                 
         except BrokenResourceError:
             logger.debug("Connection was closed while handling notification")
+        except ValidationError as e:
+            logger.debug(f"Validation error in notification handling: {e}")
         except Exception as e:
-            # 记录但不传播异常
-            logger.warning(f"Error in notification handling: {e}")
+            logger.warning(f"Unexpected error in notification handling: {e}")
 
-    async def _handle_cancelled_notification(self, notification: dict):
-        """专门处理取消通知的方法"""
+    async def _handle_progress_update(self, notification: Dict[str, Any]) -> None:
+        """将任何进度相关通知转换为标准的进度通知"""
         try:
             params = notification.get("params", {})
             request_id = str(params.get("requestId", "unknown"))
-            reason = str(params.get("reason", "Operation cancelled"))
-            
-            # 构造进度通知
+            message = str(params.get("reason", "Operation status update"))
+
+            # 创建标准的进度通知
             progress_notification = types.ProgressNotification(
                 method="notifications/progress",
                 params=types.ProgressNotificationParams(
                     progressToken=request_id,
-                    progress=1.0,  # 表示完成
-                    message=reason
+                    progress=1.0,  # 对于取消/完成的情况，进度为100%
+                    message=message
                 )
             )
             
-            # 安全发送通知
-            await safe_send_notification(
-                self._session,
-                types.ServerNotification(progress_notification),
-                convert_cancelled=False  # 已经是转换后的通知了
-            )
+            # 通过会话发送通知
+            if self._session:
+                await self._session.send_notification(types.ServerNotification(progress_notification))
+            else:
+                logger.warning("No active session to send notification")
+                
         except ValidationError as e:
-            logger.debug(f"Validation error converting cancel to progress: {e}")
+            logger.debug(f"Failed to create progress notification: {e}")
         except Exception as e:
-            logger.warning(f"Error handling cancelled notification: {e}")
+            logger.warning(f"Error sending progress update: {e}")
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
@@ -91,12 +85,12 @@ def serve(openai_api_key: str) -> OpenAIServer:
     connector = LLMConnector(openai_api_key)
 
     @server.list_tools()
-    async def handle_list_tools() -> List[types.Tool]:
+    async def handle_list_tools() -> list[types.Tool]:
         """返回支持的工具列表"""
         return get_tool_definitions()
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> List[types.TextContent | types.ImageContent]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent]:
         """处理工具调用"""
         if not arguments:
             raise ValueError("未提供参数")
@@ -121,12 +115,12 @@ def serve(openai_api_key: str) -> OpenAIServer:
 
     return server
 
-async def run_server(server: OpenAIServer, read_stream, write_stream):
+async def run_server(server: OpenAIServer, read_stream: Any, write_stream: Any) -> None:
     """运行服务器的核心逻辑"""
     try:
         experimental_capabilities = {
             "messageSize": {
-                "maxMessageBytes": 32 * 1024 * 1024
+                "maxMessageBytes": 32 * 1024 * 1024  # 32MB
             }
         }
 
@@ -142,7 +136,7 @@ async def run_server(server: OpenAIServer, read_stream, write_stream):
                     experimental_capabilities=experimental_capabilities
                 )
             ),
-            raise_exceptions=False
+            raise_exceptions=False  # 不抛出异常，而是记录它们
         )
 
     except (BrokenResourceError, ClosedResourceError) as e:
@@ -154,8 +148,8 @@ async def run_server(server: OpenAIServer, read_stream, write_stream):
             for exc in e.exceptions:
                 if isinstance(exc, ValidationError):
                     logger.debug(f"Validation error in group: {exc}")
-                elif "cancelled" in str(exc).lower():
-                    logger.debug(f"Cancellation in group: {exc}")
+                elif isinstance(exc, (BrokenResourceError, ClosedResourceError)):
+                    logger.debug(f"Connection closed in group: {exc}")
                 else:
                     logger.error(f"Error in group: {exc}", exc_info=True)
         else:
@@ -169,7 +163,6 @@ async def _run():
             await run_server(server, read_stream, write_stream)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
-        raise
 
 @click.command()
 @click.option("--openai-api-key", envvar="OPENAI_API_KEY", required=True)
