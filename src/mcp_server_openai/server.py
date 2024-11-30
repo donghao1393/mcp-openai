@@ -13,7 +13,7 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
-from anyio import BrokenResourceError, ClosedResourceError, create_task_group, move_on_after
+from anyio import BrokenResourceError, ClosedResourceError, create_task_group, move_on_after, CancelScope
 from pydantic import ValidationError
 
 from .llm import LLMConnector
@@ -86,17 +86,23 @@ def serve(openai_api_key: str) -> OpenAIServer:
 
         match name:
             case "ask-openai":
-                async with move_on_after(90) as scope:
-                    result = await handle_ask_openai(connector, arguments)
-                    if scope.cancel_called:
-                        return [types.TextContent(type="text", text="Request timed out after 90 seconds")]
-                    return result
+                try:
+                    with CancelScope(deadline=90) as scope:
+                        result = await handle_ask_openai(connector, arguments)
+                        if scope.cancel_called:
+                            return [types.TextContent(type="text", text="Request timed out after 90 seconds")]
+                        return result
+                except TimeoutError:
+                    return [types.TextContent(type="text", text="Request timed out after 90 seconds")]
             case "create-image":
-                async with move_on_after(120) as scope:
-                    result = await handle_create_image(server, connector, arguments)
-                    if scope.cancel_called:
-                        return [types.TextContent(type="text", text="Image generation timed out after 120 seconds")]
-                    return result
+                try:
+                    with CancelScope(deadline=120) as scope:
+                        result = await handle_create_image(server, connector, arguments)
+                        if scope.cancel_called:
+                            return [types.TextContent(type="text", text="Image generation timed out after 120 seconds")]
+                        return result
+                except TimeoutError:
+                    return [types.TextContent(type="text", text="Image generation timed out after 120 seconds")]
             case _:
                 raise ValueError(f"未知的工具: {name}")
 
