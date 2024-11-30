@@ -27,15 +27,10 @@ logger = logging.getLogger(__name__)
 TEMP_DIR = Path(tempfile.gettempdir()) / "mcp-server-openai-images"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 
-def save_original_image(image_data: bytes, extension: str = ".png") -> str:
-    """
-    保存原始图像并返回文件路径
-    """
-    temp_file = TEMP_DIR / f"dalle_image_{hash(image_data)}{extension}"
-    temp_file.write_bytes(image_data)
-    return str(temp_file)
-
 def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[bytes, str]:
+    """
+    Compress image data to ensure it doesn't exceed the specified size.
+    """
     logger.debug(f"Original image size: {len(image_data)} bytes")
     
     try:
@@ -125,7 +120,7 @@ def serve(openai_api_key: str) -> Server:
         ]
 
     @server.call_tool()
-    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent | types.EmbeddedResource]:
+    async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent]:
         try:
             if not arguments:
                 raise ValueError("未提供参数")
@@ -205,26 +200,15 @@ def serve(openai_api_key: str) -> Server:
                             )
                         )
                     )
-
+                    
                     for idx, image_data in enumerate(image_data_list, 1):
                         try:
                             logger.debug(f"Processing image {idx}/{len(image_data_list)}")
-                            
-                            # 保存原始图片
-                            original_path = save_original_image(image_data["data"])
-                            logger.debug(f"Original image saved to: {original_path}")
                             
                             # 处理压缩版本
                             compressed_data, mime_type = compress_image_data(image_data["data"])
                             encoded_data = base64.b64encode(compressed_data).decode('utf-8')
                             logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
-
-                            # 创建图片资源
-                            image_resource = types.TextResourceContents(
-                                uri=f"file://{original_path}",
-                                mimeType=image_data["media_type"],
-                                text=f"![]({original_path})"
-                            )
 
                             # 添加压缩版本用于预览
                             response_contents.append(
@@ -234,19 +218,20 @@ def serve(openai_api_key: str) -> Server:
                                     mimeType=mime_type
                                 )
                             )
-
-                            # 添加图片资源和下载链接
+                            
+                            # 添加原始图像数据供下载
                             response_contents.append(
-                                types.EmbeddedResource(
-                                    type="resource",
-                                    resource=image_resource
+                                types.ImageContent(
+                                    type="image",
+                                    data=base64.b64encode(image_data["data"]).decode('utf-8'),
+                                    mimeType=image_data["media_type"]
                                 )
                             )
 
                             response_contents.append(
                                 types.TextContent(
                                     type="text",
-                                    text=f"\n您可以通过以下链接下载第 {idx} 张图片的高清原图：\n{original_path}\n"
+                                    text=f"\n▲ 上方显示的是第 {idx} 张图片的预览版本与原图。预览版本经过压缩以提升加载速度，原图保持了完整的画质。"
                                 )
                             )
 
