@@ -17,7 +17,7 @@ class OpenAIServer(server.Server):
     
     def __init__(self):
         """初始化OpenAI服务器"""
-        super().__init__()
+        super().__init__(name="mcp-openai")  # 添加name参数
         
         # 获取API密钥
         self.api_key = os.environ.get("OPENAI_API_KEY")
