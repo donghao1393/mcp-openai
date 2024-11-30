@@ -10,7 +10,7 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions, ExperimentalCapabilities
+from mcp.server.models import InitializationOptions, MessageCapabilities
 
 from .llm import LLMConnector
 
@@ -276,8 +276,7 @@ def main(openai_api_key: str):
         async def _run():
             async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                 server = serve(openai_api_key)
-                # 设置服务器的最大消息大小为32MB
-                experimental_capabilities = ExperimentalCapabilities(maxMessageBytes=32 * 1024 * 1024)
+                # 设置服务器的最大消息大小为32MB，通过 MessageCapabilities
                 await server.run(
                     read_stream, write_stream,
                     InitializationOptions(
@@ -285,7 +284,9 @@ def main(openai_api_key: str):
                         server_version="0.3.2",
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(tools_changed=True),
-                            experimental_capabilities=experimental_capabilities
+                            message_capabilities=MessageCapabilities(
+                                maxMessageBytes=32 * 1024 * 1024
+                            )
                         )
                     )
                 )
