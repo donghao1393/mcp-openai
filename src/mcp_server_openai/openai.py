@@ -17,7 +17,7 @@ class OpenAIServer(server.Server):
     
     def __init__(self):
         """初始化OpenAI服务器"""
-        super().__init__(name="mcp-openai")  # 添加name参数
+        super().__init__(name="mcp-openai")
         
         # 获取API密钥
         self.api_key = os.environ.get("OPENAI_API_KEY")
@@ -79,9 +79,12 @@ class OpenAIServer(server.Server):
     async def shutdown(self) -> None:
         """关闭服务器"""
         logger.info("关闭OpenAI服务器...")
-        if self.connector and hasattr(self.connector, 'close'):
-            try:
+        try:
+            if hasattr(self, 'connector') and self.connector and hasattr(self.connector, 'close'):
                 await self.connector.close()
-            except Exception as e:
-                logger.error(f"Error closing connector: {e}")
-        # 移除对super().shutdown()的调用，因为父类没有这个方法
+            await super().shutdown()  # 调用父类的shutdown方法
+            logger.info("OpenAI服务器关闭完成")
+        except Exception as e:
+            logger.error(f"服务器关闭过程中发生错误: {e}", exc_info=True)
+            # 不要吞掉异常，让调用者知道发生了错误
+            raise
