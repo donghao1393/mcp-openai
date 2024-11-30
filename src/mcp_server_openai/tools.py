@@ -6,13 +6,32 @@ MCP Server OpenAI tools模块
 import logging
 import asyncio
 import base64
+import gc
 from typing import List, Optional, Any
+from contextlib import contextmanager
 
 import mcp.types as types
 from .image_utils import compress_image_data
 from .notifications import safe_send_notification
 
 logger = logging.getLogger(__name__)
+
+@contextmanager
+def memory_tracker(operation_name: str):
+    """
+    跟踪内存使用的context manager
+    
+    Args:
+        operation_name: 操作名称，用于日志记录
+    """
+    try:
+        # 操作前强制进行垃圾回收
+        gc.collect()
+        yield
+    finally:
+        # 操作后再次强制进行垃圾回收
+        gc.collect()
+        logger.debug(f"Memory cleanup completed after {operation_name}")
 
 def get_progress_token(server) -> Optional[str | int]:
     """
@@ -24,13 +43,16 @@ def get_progress_token(server) -> Optional[str | int]:
     Returns:
         Optional[str | int]: 进度令牌，如果不可用则返回 None
     """
-    if (
-        server.request_context 
-        and hasattr(server.request_context, 'meta')
-        and server.request_context.meta is not None
-        and hasattr(server.request_context.meta, 'progressToken')
-    ):
-        return server.request_context.meta.progressToken
+    try:
+        if (
+            server.request_context 
+            and hasattr(server.request_context, 'meta')
+            and server.request_context.meta is not None
+            and hasattr(server.request_context.meta, 'progressToken')
+        ):
+            return server.request_context.meta.progressToken
+    except Exception as e:
+        logger.warning(f"Error getting progress token: {e}")
     return None
 
 def get_tool_definitions() -> List[types.Tool]:
@@ -96,27 +118,34 @@ async def send_progress(
         progress: 当前进度
         total: 总进度（默认100）
     """
-    await safe_send_notification(
-        session,
-        types.ProgressNotification(
-            method="notifications/progress",
-            params=types.ProgressNotificationParams(
-                progressToken=progress_token,
-                progress=progress,
-                total=total
+    try:
+        await safe_send_notification(
+            session,
+            types.ProgressNotification(
+                method="notifications/progress",
+                params=types.ProgressNotificationParams(
+                    progressToken=progress_token,
+                    progress=progress,
+                    total=total
+                )
             )
         )
-    )
+    except Exception as e:
+        logger.warning(f"Failed to send progress notification: {e}")
 
 async def handle_ask_openai(connector, arguments: dict) -> List[types.TextContent]:
     """处理OpenAI问答请求"""
-    response = await connector.ask_openai(
-        query=arguments["query"],
-        model=arguments.get("model", "gpt-4"),
-        temperature=arguments.get("temperature", 0.7),
-        max_tokens=arguments.get("max_tokens", 500)
-    )
-    return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
+    try:
+        response = await connector.ask_openai(
+            query=arguments["query"],
+            model=arguments.get("model", "gpt-4"),
+            temperature=arguments.get("temperature", 0.7),
+            max_tokens=arguments.get("max_tokens", 500)
+        )
+        return [types.TextContent(type="text", text=f"OpenAI 回答:\n{response}")]
+    except Exception as e:
+        logger.error(f"Error in ask_openai: {e}", exc_info=True)
+        raise
 
 async def handle_create_image(server, connector, arguments: dict) -> List[types.TextContent | types.ImageContent]:
     """处理图像生成请求"""
@@ -137,18 +166,19 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         if progress_token := get_progress_token(server):
             # 开始生成：显示0%进度
             await send_progress(server.request_context.session, progress_token, 0)
-            
-        logger.debug("Calling OpenAI to generate image...")
-        image_data_list = await connector.create_image(
-            prompt=arguments["prompt"],
-            model=arguments.get("model", "dall-e-3"),
-            size=arguments.get("size", "1024x1024"),
-            quality=arguments.get("quality", "standard"),
-            n=arguments.get("n", 1),
-            timeout=timeout,
-            max_retries=max_retries
-        )
-        logger.debug(f"Received {len(image_data_list)} images from OpenAI")
+        
+        with memory_tracker("dall-e image generation"):
+            logger.debug("Calling OpenAI to generate image...")
+            image_data_list = await connector.create_image(
+                prompt=arguments["prompt"],
+                model=arguments.get("model", "dall-e-3"),
+                size=arguments.get("size", "1024x1024"),
+                quality=arguments.get("quality", "standard"),
+                n=arguments.get("n", 1),
+                timeout=timeout,
+                max_retries=max_retries
+            )
+            logger.debug(f"Received {len(image_data_list)} images from OpenAI")
 
         # 图像生成完成：更新进度到50%
         if progress_token := get_progress_token(server):
@@ -168,25 +198,26 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
             try:
                 logger.debug(f"Processing image {idx}/{len(image_data_list)}")
                 
-                # 只处理一个压缩版本的图像
-                compressed_data, mime_type = compress_image_data(image_data["data"])
-                encoded_data = base64.b64encode(compressed_data).decode('utf-8')
-                logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
+                with memory_tracker(f"image processing {idx}"):
+                    # 只处理一个压缩版本的图像
+                    compressed_data, mime_type = compress_image_data(image_data["data"])
+                    encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+                    logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
 
-                response_contents.append(
-                    types.ImageContent(
-                        type="image",
-                        data=encoded_data,
-                        mimeType=mime_type
+                    response_contents.append(
+                        types.ImageContent(
+                            type="image",
+                            data=encoded_data,
+                            mimeType=mime_type
+                        )
                     )
-                )
 
-                response_contents.append(
-                    types.TextContent(
-                        type="text",
-                        text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
+                    response_contents.append(
+                        types.TextContent(
+                            type="text",
+                            text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
+                        )
                     )
-                )
 
                 # 更新进度：50% + (50% * 当前图片处理进度)
                 if progress_token and len(image_data_list) > 0:
@@ -196,6 +227,9 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                         progress_token,
                         progress
                     )
+
+                # 在每张图片处理后进行垃圾回收
+                gc.collect()
 
             except Exception as e:
                 error_msg = f"Failed to process image {idx}: {str(e)}"
@@ -230,3 +264,7 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         error_msg = str(e)
         logger.error(f"Error during image generation: {error_msg}", exc_info=True)
         return [types.TextContent(type="text", text=f"生成图像时出错: {error_msg}")]
+    finally:
+        # 确保最终清理所有资源
+        gc.collect()
+        logger.debug("Final cleanup completed in handle_create_image")
