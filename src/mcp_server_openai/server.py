@@ -13,6 +13,7 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
+from mcp.shared.session import RequestResponder
 from anyio import BrokenResourceError, ClosedResourceError
 from pydantic import ValidationError
 
@@ -26,34 +27,48 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+class JSONRPCCancelledNotification(types.Notification):
+    """
+    处理取消请求的通知
+    作为临时解决方案，直到MCP标准支持取消通知
+    """
+    method: str = "cancelled"
+    params: types.NotificationParams
+
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
-    
+
+    async def _handle_incoming_message(self, message: Any) -> None:
+        """处理传入消息的自定义逻辑"""
+        try:
+            if isinstance(message, dict) and message.get("method") == "cancelled":
+                logger.debug("Received cancelled notification")
+                
+                # 记录取消请求的详细信息但不进一步处理
+                params = message.get("params", {})
+                request_id = params.get("requestId", "unknown")
+                reason = params.get("reason", "unknown")
+                logger.info(f"Request {request_id} cancelled: {reason}")
+                return
+            
+            # 对于其他消息，使用父类的处理逻辑
+            if isinstance(message, (RequestResponder, types.ClientNotification)):
+                await super()._received_notification(message)
+                
+        except (BrokenResourceError, ClosedResourceError) as e:
+            logger.debug(f"Connection closed: {e}")
+        except ValidationError as e:
+            logger.debug(f"Validation error: {e}")
+        except Exception as e:
+            logger.warning(f"Error handling message: {e}")
+
     async def _received_notification(self, notification: Dict[str, Any]) -> None:
         """处理收到的通知"""
         try:
-            if not notification:
-                logger.debug("Received empty notification")
-                return
-                
-            # 对于非标准的通知，只记录日志
-            if isinstance(notification, dict) and notification.get("method") not in [
-                "notifications/progress",
-                "notifications/initialized",
-                "notifications/roots/list_changed"
-            ]:
-                logger.debug(f"Received non-standard notification: {notification.get('method')}")
-                return
-            
-            # 标准通知通过父类处理
-            await super()._received_notification(notification)
-                
-        except BrokenResourceError:
-            logger.debug("Connection was closed while handling notification")
-        except ValidationError as e:
-            logger.debug(f"Validation error in notification handling: {e}")
+            # 使用自定义的消息处理逻辑
+            await self._handle_incoming_message(notification)
         except Exception as e:
-            logger.warning(f"Unexpected error in notification handling: {e}")
+            logger.warning(f"Error in notification handling: {e}")
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
@@ -97,6 +112,9 @@ async def run_server(server: OpenAIServer, read_stream: Any, write_stream: Any) 
         experimental_capabilities = {
             "messageSize": {
                 "maxMessageBytes": 32 * 1024 * 1024  # 32MB
+            },
+            "notifications": {
+                "cancelled": True  # 声明支持取消通知
             }
         }
 
