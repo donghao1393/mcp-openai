@@ -11,7 +11,11 @@ import traceback
 import signal
 import anyio
 
-# ... [其他导入保持不变]
+import mcp.server
+import mcp.server.stdio
+from mcp.server.models import InitializationOptions, NotificationOptions
+from mcp.server.session import BrokenResourceError, ClosedResourceError
+from .openai import OpenAIServer  # 从当前包导入OpenAIServer
 
 # 配置日志记录
 logging.basicConfig(
@@ -19,8 +23,6 @@ logging.basicConfig(
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# ... [中间代码保持不变]
 
 async def run_server(server: OpenAIServer) -> None:
     """运行服务器的核心逻辑"""
@@ -96,4 +98,14 @@ async def run_server(server: OpenAIServer) -> None:
         except Exception as e:
             logger.error(f"Error during final shutdown: {e}", exc_info=True)
 
-# ... [其余代码保持不变]
+def main():
+    """程序入口点"""
+    try:
+        server = OpenAIServer()
+        anyio.run(run_server, server)
+    except Exception as e:
+        logger.error(f"Error starting server: {e}", exc_info=True)
+        sys.exit(1)
+
+if __name__ == "__main__":
+    main()
