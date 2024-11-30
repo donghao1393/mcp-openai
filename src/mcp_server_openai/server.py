@@ -299,12 +299,12 @@ def main(openai_api_key: str):
                             )
                         )
                         logger.info("Server session ended normally")
-                    except* (asyncio.CancelledError, BrokenResourceError, ClosedResourceError) as e:
+                    except (asyncio.CancelledError, BrokenResourceError, ClosedResourceError) as e:
                         logger.debug("Session closed normally")
                     except Exception as e:
                         logger.error(f"Unexpected error during server run: {e}", exc_info=True)
                         raise
-            except* (BrokenResourceError, ClosedResourceError) as e:
+            except (BrokenResourceError, ClosedResourceError) as e:
                 logger.debug("Stream connection closed")
             except Exception as e:
                 logger.error(f"Error in server setup: {e}", exc_info=True)
