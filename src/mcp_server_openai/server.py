@@ -2,12 +2,9 @@ import asyncio
 import logging
 import sys
 import base64
-import os
-import tempfile
 from typing import Optional
 from io import BytesIO
 from PIL import Image
-from pathlib import Path
 
 import click
 import mcp
@@ -17,19 +14,25 @@ from mcp.server.models import InitializationOptions
 
 from .llm import LLMConnector
 
+# 配置日志记录
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-# 创建临时目录用于存储高清图片
-TEMP_DIR = Path(tempfile.gettempdir()) / "mcp-server-openai-images"
-TEMP_DIR.mkdir(parents=True, exist_ok=True)
+async def safe_send_notification(session, notification):
+    """
+    安全地发送通知，捕获并记录任何错误
+    """
+    try:
+        await session.send_notification(notification)
+    except Exception as e:
+        logger.warning(f"Failed to send notification: {e}")
 
 def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[bytes, str]:
     """
-    Compress image data to ensure it doesn't exceed the specified size.
+    压缩图像数据
     """
     logger.debug(f"Original image size: {len(image_data)} bytes")
     
@@ -64,7 +67,7 @@ def compress_image_data(image_data: bytes, max_size: int = 750 * 1024) -> tuple[
         return final_data, mime_type
             
     except Exception as e:
-        logger.error(f"Image compression failed: {str(e)}")
+        logger.error(f"Image compression failed: {str(e)}", exc_info=True)
         raise
 
 def serve(openai_api_key: str) -> Server:
@@ -150,19 +153,17 @@ def serve(openai_api_key: str) -> Server:
                 try:
                     if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
                         progress_token = server.request_context.meta.progressToken
-                        try:
-                            await server.request_context.session.send_notification(
-                                types.ProgressNotification(
-                                    method="notifications/progress",
-                                    params=types.ProgressNotificationParams(
-                                        progressToken=progress_token,
-                                        progress=0,
-                                        total=100
-                                    )
+                        await safe_send_notification(
+                            server.request_context.session,
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=0,
+                                    total=100
                                 )
                             )
-                        except Exception as e:
-                            logger.warning(f"Failed to send initial progress notification: {e}")
+                        )
 
                     logger.debug("Calling OpenAI to generate image...")
                     image_data_list = await connector.create_image(
@@ -177,19 +178,17 @@ def serve(openai_api_key: str) -> Server:
                     logger.debug(f"Received {len(image_data_list)} images from OpenAI")
 
                     if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-                        try:
-                            await server.request_context.session.send_notification(
-                                types.ProgressNotification(
-                                    method="notifications/progress",
-                                    params=types.ProgressNotificationParams(
-                                        progressToken=progress_token,
-                                        progress=100,
-                                        total=100
-                                    )
+                        await safe_send_notification(
+                            server.request_context.session,
+                            types.ProgressNotification(
+                                method="notifications/progress",
+                                params=types.ProgressNotificationParams(
+                                    progressToken=progress_token,
+                                    progress=100,
+                                    total=100
                                 )
                             )
-                        except Exception as e:
-                            logger.warning(f"Failed to send completion progress notification: {e}")
+                        )
                     
                     response_contents.append(
                         types.TextContent(
@@ -218,8 +217,16 @@ def serve(openai_api_key: str) -> Server:
                                     mimeType=mime_type
                                 )
                             )
+
+                            # 添加分隔提示
+                            response_contents.append(
+                                types.TextContent(
+                                    type="text",
+                                    text="\n以下是原图版本（加载可能较慢）："
+                                )
+                            )
                             
-                            # 添加原始图像数据供下载
+                            # 添加原始图像数据
                             response_contents.append(
                                 types.ImageContent(
                                     type="image",
@@ -231,7 +238,7 @@ def serve(openai_api_key: str) -> Server:
                             response_contents.append(
                                 types.TextContent(
                                     type="text",
-                                    text=f"\n▲ 上方显示的是第 {idx} 张图片的预览版本与原图。预览版本经过压缩以提升加载速度，原图保持了完整的画质。"
+                                    text=f"\n▲ 已显示第 {idx} 张图片的预览版本与原图。预览版本经过压缩以提升加载速度，原图保持了完整的画质。\n{'-' * 50}"
                                 )
                             )
 
@@ -247,9 +254,9 @@ def serve(openai_api_key: str) -> Server:
                             
                     logger.info("Image generation and processing completed successfully")
                     return response_contents
-                    
-                except asyncio.CancelledError:
+                except asyncio.CancelledError as e:
                     logger.info("Request was cancelled by the client")
+                    logger.debug(f"Cancellation details: {str(e)}", exc_info=True)
                     return [types.TextContent(type="text", text="请求已取消")]
                 except TimeoutError as e:
                     error_msg = str(e)
