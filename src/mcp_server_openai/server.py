@@ -7,6 +7,7 @@ import asyncio
 import logging
 import sys
 from typing import Any, Dict, Optional, Union
+import traceback
 
 import click
 import mcp
@@ -23,7 +24,11 @@ from .tools import get_tool_definitions, handle_ask_openai, handle_create_image
 # 配置日志记录
 logging.basicConfig(
     level=logging.DEBUG,
-    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
+    format='%(asctime)s [%(levelname)s] %(name)s: %(message)s',
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler('openai_server.log')  # 添加文件日志
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -52,6 +57,12 @@ class OpenAIServerSession(BaseSession):
         kwargs['receive_notification_type'] = ExtendedClientNotification
         super().__init__(*args, **kwargs)
 
+    async def handle_error(self, error: Exception) -> None:
+        """增强的错误处理"""
+        logger.error(f"Session error occurred: {str(error)}")
+        logger.debug(f"Error details: {traceback.format_exc()}")
+        await super().handle_error(error)
+
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
 
@@ -65,7 +76,7 @@ class OpenAIServer(Server):
         )
 
     async def _handle_incoming_message(self, message: Any) -> None:
-        """处理传入消息的逻辑"""
+        """处理传入消息的逻辑，增强错误处理"""
         try:
             # 1. 处理请求响应者
             if isinstance(message, RequestResponder):
@@ -86,13 +97,19 @@ class OpenAIServer(Server):
 
         except (BrokenResourceError, ClosedResourceError) as e:
             logger.debug(f"Connection closed during message handling: {e}")
+            # 尝试优雅关闭
+            await self.shutdown()
         except ValidationError as e:
             logger.error(f"Validation error during message handling: {e.errors()}")
+        except asyncio.CancelledError:
+            logger.info("Server operation cancelled")
+            raise  # 重新抛出取消异常以允许正常的异步取消
         except Exception as e:
-            logger.error(f"Unexpected error during message handling: {e}", exc_info=True)
+            logger.critical(f"Unexpected error during message handling: {e}", exc_info=True)
+            # 继续运行，不中断服务
 
     async def _handle_notification(self, notification: ExtendedClientNotification) -> None:
-        """处理通知的逻辑"""
+        """处理通知的逻辑，增强错误处理"""
         try:
             match notification.root:
                 case CancelledNotification():
@@ -120,6 +137,18 @@ class OpenAIServer(Server):
         except Exception as e:
             logger.error(f"Error handling notification: {e}", exc_info=True)
 
+    async def shutdown(self) -> None:
+        """优雅关闭服务器"""
+        logger.info("Initiating server shutdown...")
+        try:
+            # 实现优雅关闭逻辑
+            # 例如关闭所有活跃连接，清理资源等
+            await super().shutdown()
+        except Exception as e:
+            logger.error(f"Error during shutdown: {e}", exc_info=True)
+        finally:
+            logger.info("Server shutdown completed")
+
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
     server = OpenAIServer("openai-server")
@@ -128,7 +157,11 @@ def serve(openai_api_key: str) -> OpenAIServer:
     @server.list_tools()
     async def handle_list_tools() -> list[types.Tool]:
         """返回支持的工具列表"""
-        return get_tool_definitions()
+        try:
+            return get_tool_definitions()
+        except Exception as e:
+            logger.error(f"Error listing tools: {e}", exc_info=True)
+            raise
 
     @server.call_tool()
     async def handle_tool_call(name: str, arguments: dict | None) -> list[types.TextContent | types.ImageContent]:
@@ -185,9 +218,11 @@ async def run_server(server: OpenAIServer) -> None:
             )
 
     except (BrokenResourceError, ClosedResourceError) as e:
-        logger.debug(f"Connection closed: {e}")
+        logger.info(f"Connection closed: {e}")
     except ValidationError as e:
         logger.error(f"Validation error: {e.errors()}")
+    except KeyboardInterrupt:
+        logger.info("Server stopped by user")
     except Exception as e:
         if isinstance(e, ExceptionGroup):
             for exc in e.exceptions:
@@ -199,6 +234,9 @@ async def run_server(server: OpenAIServer) -> None:
                     logger.error(f"Error in group: {exc}", exc_info=True)
         else:
             logger.error(f"Server error: {e}", exc_info=True)
+    finally:
+        # 确保服务器正确关闭
+        await server.shutdown()
 
 async def _run():
     """服务器启动的核心异步函数"""
@@ -208,6 +246,11 @@ async def _run():
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
         sys.exit(1)
+    finally:
+        # 确保所有资源都被清理
+        for handler in logger.handlers[:]:
+            handler.close()
+            logger.removeHandler(handler)
 
 @click.command()
 @click.option("--openai-api-key", envvar="OPENAI_API_KEY", required=True)
