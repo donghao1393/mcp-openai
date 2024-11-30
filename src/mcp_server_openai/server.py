@@ -13,7 +13,7 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
-from anyio import BrokenResourceError, ClosedResourceError, create_task_group, move_on_after, CancelScope
+from anyio import BrokenResourceError, ClosedResourceError, create_task_group
 from pydantic import ValidationError
 
 from .llm import LLMConnector
@@ -84,27 +84,23 @@ def serve(openai_api_key: str) -> OpenAIServer:
         if not arguments:
             raise ValueError("未提供参数")
 
-        match name:
-            case "ask-openai":
-                try:
-                    with CancelScope(deadline=90) as scope:
-                        result = await handle_ask_openai(connector, arguments)
-                        if scope.cancel_called:
-                            return [types.TextContent(type="text", text="Request timed out after 90 seconds")]
-                        return result
-                except TimeoutError:
-                    return [types.TextContent(type="text", text="Request timed out after 90 seconds")]
-            case "create-image":
-                try:
-                    with CancelScope(deadline=120) as scope:
-                        result = await handle_create_image(server, connector, arguments)
-                        if scope.cancel_called:
-                            return [types.TextContent(type="text", text="Image generation timed out after 120 seconds")]
-                        return result
-                except TimeoutError:
-                    return [types.TextContent(type="text", text="Image generation timed out after 120 seconds")]
-            case _:
-                raise ValueError(f"未知的工具: {name}")
+        try:
+            match name:
+                case "ask-openai":
+                    return await handle_ask_openai(connector, arguments)
+                case "create-image":
+                    return await handle_create_image(server, connector, arguments)
+                case _:
+                    raise ValueError(f"未知的工具: {name}")
+        except asyncio.CancelledError:
+            logger.info("操作被取消")
+            return [types.TextContent(type="text", text="操作已取消")]
+        except TimeoutError as e:
+            logger.warning(f"操作超时: {e}")
+            return [types.TextContent(type="text", text=f"操作超时: {e}")]
+        except Exception as e:
+            logger.error(f"操作失败: {e}", exc_info=True)
+            return [types.TextContent(type="text", text=f"操作失败: {e}")]
 
     return server
 
@@ -136,7 +132,6 @@ async def run_server(server: OpenAIServer, read_stream, write_stream):
         logger.debug(f"Connection closed: {e}")
     except ValidationError as e:
         logger.debug(f"Validation error: {e}")
-        # 继续运行，不中断服务
     except Exception as e:
         if isinstance(e, ExceptionGroup):
             for exc in e.exceptions:
