@@ -10,11 +10,11 @@ from typing import Any, Dict, Optional, Union
 import traceback
 import signal
 import anyio
+from anyio import BrokenResourceError, ClosedResourceError
 
 import mcp.server
 import mcp.server.stdio
 from mcp.server.models import InitializationOptions
-from mcp.server.session import BrokenResourceError, ClosedResourceError
 from .openai import OpenAIServer  # 从当前包导入OpenAIServer
 
 # 配置日志记录
