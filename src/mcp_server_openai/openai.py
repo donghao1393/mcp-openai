@@ -2,7 +2,7 @@
 
 import logging
 import os
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Union, Sequence
 
 import mcp.server as server
 import mcp.types as types
@@ -36,15 +36,22 @@ class OpenAIServer(server.Server):
         # 设置工具定义
         self._tools = get_tool_definitions()
         
-    async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
-        """处理OpenAI问答请求"""
-        return await handle_ask_openai(self.connector, arguments)
-        
-    async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
-        """处理图像生成请求"""
-        return await handle_create_image(self, self.connector, arguments)
+    @server.Server.call_tool()
+    async def handle_call_tool(
+        self,
+        name: str,
+        arguments: Dict[str, Any]
+    ) -> Sequence[Union[types.TextContent, types.ImageContent, types.EmbeddedResource]]:
+        """处理工具调用"""
+        if name not in self.handlers:
+            raise ValueError(f"未知的工具: {name}")
+            
+        handler = self.handlers[name]
+        if name == "create-image":
+            return await handler(self, self.connector, arguments)
+        return await handler(self.connector, arguments)
 
-    @server.Server.list_tools()  # 使用装饰器来实现list_tools
+    @server.Server.list_tools()
     async def handle_list_tools(self) -> List[types.Tool]:
         """返回支持的工具列表"""
         return self._tools
@@ -52,7 +59,9 @@ class OpenAIServer(server.Server):
     async def shutdown(self) -> None:
         """关闭服务器"""
         logger.info("关闭OpenAI服务器...")
-        # 这里可以添加任何需要的清理工作
-        if hasattr(self.connector, 'close'):  # 安全检查
-            await self.connector.close()
+        if self.connector and hasattr(self.connector, 'close'):
+            try:
+                await self.connector.close()
+            except Exception as e:
+                logger.error(f"Error closing connector: {e}")
         await super().shutdown()

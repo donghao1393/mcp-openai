@@ -157,3 +157,19 @@ class LLMConnector:
         )
         logger.error(error_msg)
         raise TimeoutError(error_msg)
+
+    async def close(self) -> None:
+        """
+        关闭连接器，清理资源
+        """
+        try:
+            # 关闭 aiohttp 会话（如果存在）
+            if hasattr(self.client, 'close') and callable(self.client.close):
+                await self.client.close()
+                logger.debug("Successfully closed OpenAI client session")
+            elif hasattr(self.client, 'aiohttp_session') and self.client.aiohttp_session:
+                await self.client.aiohttp_session.close()
+                logger.debug("Successfully closed aiohttp session")
+        except Exception as e:
+            logger.warning(f"Error while closing LLM connector: {e}")
+            # 不抛出异常，让清理流程继续进行
