@@ -10,7 +10,7 @@ import click
 import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
-from mcp.server.models import InitializationOptions
+from mcp.server.models import InitializationOptions, ExperimentalCapabilities
 
 from .llm import LLMConnector
 
@@ -80,7 +80,7 @@ def compress_image_data(image_data: bytes, max_size: int = 512 * 1024) -> tuple[
         raise
 
 def serve(openai_api_key: str) -> Server:
-    server = Server("openai-server", max_message_size=32 * 1024 * 1024)  # 设置最大消息大小为32MB
+    server = Server("openai-server")
     connector = LLMConnector(openai_api_key)
 
     @server.list_tools()
@@ -276,6 +276,8 @@ def main(openai_api_key: str):
         async def _run():
             async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                 server = serve(openai_api_key)
+                # 设置服务器的最大消息大小为32MB
+                experimental_capabilities = ExperimentalCapabilities(maxMessageBytes=32 * 1024 * 1024)
                 await server.run(
                     read_stream, write_stream,
                     InitializationOptions(
@@ -283,7 +285,7 @@ def main(openai_api_key: str):
                         server_version="0.3.2",
                         capabilities=server.get_capabilities(
                             notification_options=NotificationOptions(tools_changed=True),
-                            experimental_capabilities={}
+                            experimental_capabilities=experimental_capabilities
                         )
                     )
                 )
