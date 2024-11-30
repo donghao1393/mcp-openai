@@ -52,6 +52,13 @@ async def run_server(server: OpenAIServer) -> None:
             tg.start_soon(lambda: handle_signal(signal.SIGINT))
             tg.start_soon(watchdog)  # 启动看门狗
 
+            # 设置通知选项
+            notification_options = mcp.server.NotificationOptions(
+                prompts_changed=False,
+                resources_changed=False,
+                tools_changed=True  # 启用工具变更通知
+            )
+
             # 设置实验性功能
             experimental_capabilities = {
                 "messageSize": {
@@ -65,15 +72,16 @@ async def run_server(server: OpenAIServer) -> None:
             try:
                 async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
                     # 启动服务器
-                    capabilities = server.get_capabilities()
-                    # 添加实验性功能
-                    capabilities.experimental = experimental_capabilities
+                    capabilities = server.get_capabilities(
+                        notification_options=notification_options,
+                        experimental_capabilities=experimental_capabilities
+                    )
                     
                     await server.run(
                         read_stream,
                         write_stream,
                         InitializationOptions(
-                            server_name="openai-server",
+                            server_name=server.name,  # 使用服务器实例的名称
                             server_version="0.3.2",
                             capabilities=capabilities
                         )

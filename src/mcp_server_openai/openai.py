@@ -43,8 +43,9 @@ class OpenAIServer(server.Server):
     async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理图像生成请求"""
         return await handle_create_image(self, self.connector, arguments)
-        
-    def get_tools(self) -> List[types.Tool]:
+
+    @server.Server.list_tools()  # 使用装饰器来实现list_tools
+    async def handle_list_tools(self) -> List[types.Tool]:
         """返回支持的工具列表"""
         return self._tools
 
@@ -52,4 +53,6 @@ class OpenAIServer(server.Server):
         """关闭服务器"""
         logger.info("关闭OpenAI服务器...")
         # 这里可以添加任何需要的清理工作
+        if hasattr(self.connector, 'close'):  # 安全检查
+            await self.connector.close()
         await super().shutdown()
