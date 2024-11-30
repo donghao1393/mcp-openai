@@ -17,7 +17,7 @@ from anyio import BrokenResourceError, ClosedResourceError
 from pydantic import ValidationError
 
 from .llm import LLMConnector
-from .notifications import CancelledNotification, CancelledParams
+from .notifications import CancelledNotification, CancelledParams, safe_send_notification
 from .tools import get_tool_definitions, handle_ask_openai, handle_create_image
 
 # 配置日志记录

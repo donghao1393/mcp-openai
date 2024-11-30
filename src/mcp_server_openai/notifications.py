@@ -6,19 +6,19 @@ MCP Server OpenAI notifications模块
 import logging
 from typing import Literal
 from pydantic import BaseModel
-from mcp.types import NotificationMessage
+from mcp.types import Notification, NotificationParams
 from anyio import BrokenResourceError, ClosedResourceError
 
 logger = logging.getLogger(__name__)
 
-class CancelledParams(BaseModel):
+class CancelledParams(NotificationParams):
     """取消通知的参数"""
     requestId: int
     reason: str | None = None
 
-class CancelledNotification(NotificationMessage):
+class CancelledNotification(Notification[CancelledParams, Literal["cancelled"]]):
     """请求取消的通知"""
-    method: Literal["cancelled"] = "cancelled"  
+    method: Literal["cancelled"] = "cancelled"
     params: CancelledParams
 
 async def safe_send_notification(session, notification):
