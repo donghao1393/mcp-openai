@@ -11,6 +11,7 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
+from anyio import BrokenResourceError, ClosedResourceError
 
 from .llm import LLMConnector
 
@@ -27,6 +28,8 @@ async def safe_send_notification(session, notification):
     """
     try:
         await session.send_notification(notification)
+    except (BrokenResourceError, ClosedResourceError):
+        logger.debug("Session closed while sending notification")
     except Exception as e:
         logger.warning(f"Failed to send notification: {e}")
 
@@ -274,35 +277,43 @@ def serve(openai_api_key: str) -> Server:
 def main(openai_api_key: str):
     try:
         async def _run():
-            async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-                server = serve(openai_api_key)
-                try:
-                    # 设置服务器的最大消息大小为32MB
-                    experimental_capabilities = {
-                        "messageSize": {
-                            "maxMessageBytes": 32 * 1024 * 1024
+            try:
+                async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+                    server = serve(openai_api_key)
+                    try:
+                        # 设置服务器的最大消息大小为32MB
+                        experimental_capabilities = {
+                            "messageSize": {
+                                "maxMessageBytes": 32 * 1024 * 1024
+                            }
                         }
-                    }
-                    await server.run(
-                        read_stream, write_stream,
-                        InitializationOptions(
-                            server_name="openai-server",
-                            server_version="0.3.2",
-                            capabilities=server.get_capabilities(
-                                notification_options=NotificationOptions(tools_changed=True),
-                                experimental_capabilities=experimental_capabilities
+                        await server.run(
+                            read_stream, write_stream,
+                            InitializationOptions(
+                                server_name="openai-server",
+                                server_version="0.3.2",
+                                capabilities=server.get_capabilities(
+                                    notification_options=NotificationOptions(tools_changed=True),
+                                    experimental_capabilities=experimental_capabilities
+                                )
                             )
                         )
-                    )
-                except* Exception as e:
-                    # 忽略会话关闭时的取消通知验证错误
-                    if not any('cancelled' in str(err) for err in e.exceptions):
+                        logger.info("Server session ended normally")
+                    except* (asyncio.CancelledError, BrokenResourceError, ClosedResourceError) as e:
+                        logger.debug("Session closed normally")
+                    except Exception as e:
+                        logger.error(f"Unexpected error during server run: {e}", exc_info=True)
                         raise
-                    logger.debug("Session closed normally with cancellation")
+            except* (BrokenResourceError, ClosedResourceError) as e:
+                logger.debug("Stream connection closed")
+            except Exception as e:
+                logger.error(f"Error in server setup: {e}", exc_info=True)
+                raise
 
         asyncio.run(_run())
     except KeyboardInterrupt:
         logger.info("服务器被用户停止")
+        sys.exit(0)
     except Exception as e:
         logger.error("服务器运行失败", exc_info=True)
         sys.exit(1)
