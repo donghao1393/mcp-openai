@@ -6,13 +6,32 @@ MCP Server OpenAI tools模块
 import logging
 import asyncio
 import base64
-from typing import List
+from typing import List, Optional
 
 import mcp.types as types
 from .image_utils import compress_image_data
 from .notifications import safe_send_notification
 
 logger = logging.getLogger(__name__)
+
+def get_progress_token(server) -> Optional[str | int]:
+    """
+    安全地获取进度令牌
+    
+    Args:
+        server: 服务器实例
+        
+    Returns:
+        Optional[str | int]: 进度令牌，如果不可用则返回 None
+    """
+    if (
+        server.request_context 
+        and hasattr(server.request_context, 'meta')
+        and server.request_context.meta is not None
+        and hasattr(server.request_context.meta, 'progressToken')
+    ):
+        return server.request_context.meta.progressToken
+    return None
 
 def get_tool_definitions() -> List[types.Tool]:
     """返回支持的工具列表"""
@@ -62,6 +81,33 @@ def get_tool_definitions() -> List[types.Tool]:
         )
     ]
 
+async def send_progress(
+    session: Any,
+    progress_token: str | int,
+    progress: float,
+    total: float = 100
+) -> None:
+    """
+    发送进度通知
+    
+    Args:
+        session: 当前会话
+        progress_token: 进度令牌
+        progress: 当前进度
+        total: 总进度（默认100）
+    """
+    await safe_send_notification(
+        session,
+        types.ProgressNotification(
+            method="notifications/progress",
+            params=types.ProgressNotificationParams(
+                progressToken=progress_token,
+                progress=progress,
+                total=total
+            )
+        )
+    )
+
 async def handle_ask_openai(connector, arguments: dict) -> List[types.TextContent]:
     """处理OpenAI问答请求"""
     response = await connector.ask_openai(
@@ -87,20 +133,11 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
     response_contents = [types.TextContent(type="text", text=status_message)]
     
     try:
-        if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-            progress_token = server.request_context.meta.progressToken
-            await safe_send_notification(
-                server.request_context.session,
-                types.ProgressNotification(
-                    method="notifications/progress",
-                    params=types.ProgressNotificationParams(
-                        progressToken=progress_token,
-                        progress=0,
-                        total=100
-                    )
-                )
-            )
-
+        # 安全地获取和发送进度通知
+        if progress_token := get_progress_token(server):
+            # 开始生成：显示0%进度
+            await send_progress(server.request_context.session, progress_token, 0)
+            
         logger.debug("Calling OpenAI to generate image...")
         image_data_list = await connector.create_image(
             prompt=arguments["prompt"],
@@ -113,18 +150,9 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         )
         logger.debug(f"Received {len(image_data_list)} images from OpenAI")
 
-        if server.request_context and hasattr(server.request_context.meta, 'progressToken'):
-            await safe_send_notification(
-                server.request_context.session,
-                types.ProgressNotification(
-                    method="notifications/progress",
-                    params=types.ProgressNotificationParams(
-                        progressToken=progress_token,
-                        progress=100,
-                        total=100
-                    )
-                )
-            )
+        # 图像生成完成：更新进度到50%
+        if progress_token := get_progress_token(server):
+            await send_progress(server.request_context.session, progress_token, 50)
         
         response_contents.append(
             types.TextContent(
@@ -160,6 +188,15 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                     )
                 )
 
+                # 更新进度：50% + (50% * 当前图片处理进度)
+                if progress_token and len(image_data_list) > 0:
+                    progress = 50 + (50 * (idx / len(image_data_list)))
+                    await send_progress(
+                        server.request_context.session, 
+                        progress_token,
+                        progress
+                    )
+
             except Exception as e:
                 error_msg = f"Failed to process image {idx}: {str(e)}"
                 logger.error(error_msg, exc_info=True)
@@ -171,7 +208,13 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                 )
                 
         logger.info("Image generation and processing completed successfully")
+        
+        # 完成所有处理：更新进度到100%
+        if progress_token := get_progress_token(server):
+            await send_progress(server.request_context.session, progress_token, 100)
+            
         return response_contents
+        
     except asyncio.CancelledError as e:
         logger.info("Request was cancelled by the client")
         logger.debug(f"Cancellation details: {str(e)}", exc_info=True)
