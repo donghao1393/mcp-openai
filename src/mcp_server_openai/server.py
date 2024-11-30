@@ -92,7 +92,7 @@ async def run_server(server: OpenAIServer) -> None:
             except Exception as e:
                 logger.error(f"Server error: {e}", exc_info=True)
 
-    except anyio.ExceptionGroup as e:
+    except ExceptionGroup as e:  # 使用 Python 内置的 ExceptionGroup
         for exc in e.exceptions:
             if isinstance(exc, (KeyboardInterrupt, SystemExit)):
                 logger.info("Server stopped by system")

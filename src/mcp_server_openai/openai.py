@@ -84,4 +84,4 @@ class OpenAIServer(server.Server):
                 await self.connector.close()
             except Exception as e:
                 logger.error(f"Error closing connector: {e}")
-        await super().shutdown()
+        # 移除对super().shutdown()的调用，因为父类没有这个方法
