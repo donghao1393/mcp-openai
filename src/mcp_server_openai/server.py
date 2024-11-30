@@ -13,13 +13,12 @@ import mcp
 import mcp.types as types
 from mcp.server import Server, NotificationOptions
 from mcp.server.models import InitializationOptions
-from mcp.shared.session import RequestResponder
+from mcp.shared.session import BaseSession, RequestResponder
 from anyio import BrokenResourceError, ClosedResourceError
-from pydantic import ValidationError
+from pydantic import BaseModel, RootModel, ValidationError
 
 from .llm import LLMConnector
 from .tools import get_tool_definitions, handle_ask_openai, handle_create_image
-from .types import CancelledNotification, CancelledNotificationParams
 
 # 配置日志记录
 logging.basicConfig(
@@ -28,45 +27,54 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# 扩展MCP通知定义以支持取消通知
+class CancelledNotificationParams(BaseModel):
+    """取消通知的参数"""
+    requestId: int
+    reason: Optional[str] = None
+
+class CancelledNotification(BaseModel):
+    """取消通知"""
+    method: str = "notifications/cancelled"
+    params: CancelledNotificationParams
+
+# 扩展ClientNotification以支持取消通知
+class ExtendedClientNotification(RootModel):
+    """扩展的客户端通知类型"""
+    root: Union[types.ProgressNotification, types.InitializedNotification, 
+               types.RootsListChangedNotification, CancelledNotification]
+
+class OpenAIServerSession(BaseSession):
+    """扩展的MCP会话，支持取消通知"""
+    
+    def __init__(self, *args, **kwargs):
+        # 将通知类型替换为扩展版本
+        kwargs['receive_notification_type'] = ExtendedClientNotification
+        super().__init__(*args, **kwargs)
+
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
 
-    def _try_parse_notification(self, data: Dict[str, Any]) -> Optional[Union[types.ClientNotification, CancelledNotification]]:
-        """尝试解析不同类型的通知
-        
-        Args:
-            data: 原始通知数据
-            
-        Returns:
-            解析后的通知对象，如果解析失败则返回 None
-        """
-        try:
-            # 首先尝试标准通知类型
-            return types.ClientNotification.model_validate(data)
-        except ValidationError:
-            if data.get("method") == "notifications/cancelled":
-                try:
-                    # 尝试解析为取消通知
-                    return CancelledNotification.model_validate(data)
-                except ValidationError as e:
-                    logger.error(f"Failed to parse cancelled notification: {e.errors()}")
-            else:
-                logger.error(f"Unrecognized notification type: {data.get('method')}")
-        return None
+    def create_session(self, read_stream, write_stream):
+        """创建支持扩展通知的会话"""
+        return OpenAIServerSession(
+            read_stream=read_stream,
+            write_stream=write_stream,
+            receive_request_type=types.ClientRequest,
+            receive_notification_type=ExtendedClientNotification,
+        )
 
     async def _handle_incoming_message(self, message: Any) -> None:
-        """处理传入消息的改进逻辑"""
+        """处理传入消息的逻辑"""
         try:
             # 1. 处理请求响应者
             if isinstance(message, RequestResponder):
                 await super()._handle_incoming_message(message)
                 return
 
-            # 2. 处理通知
-            if isinstance(message, dict) and "method" in message:
-                notification = self._try_parse_notification(message)
-                if notification:
-                    await self._handle_notification(notification)
+            # 2. 处理客户端通知
+            if isinstance(message, ExtendedClientNotification):
+                await self._handle_notification(message)
                 return
 
             # 3. 处理其他消息类型
@@ -78,34 +86,37 @@ class OpenAIServer(Server):
 
         except (BrokenResourceError, ClosedResourceError) as e:
             logger.debug(f"Connection closed during message handling: {e}")
+        except ValidationError as e:
+            logger.error(f"Validation error during message handling: {e.errors()}")
         except Exception as e:
             logger.error(f"Unexpected error during message handling: {e}", exc_info=True)
 
-    async def _handle_notification(self, notification: Union[types.ClientNotification, CancelledNotification]) -> None:
-        """处理通知的增强逻辑"""
+    async def _handle_notification(self, notification: ExtendedClientNotification) -> None:
+        """处理通知的逻辑"""
         try:
-            if isinstance(notification, CancelledNotification):
-                logger.info(
-                    f"Request {notification.params.requestId} cancelled"
-                    f"{f': {notification.params.reason}' if notification.params.reason else ''}"
-                )
-                return
-
-            # 处理标准MCP通知
-            match notification.root.method:
-                case "notifications/progress":
+            match notification.root:
+                case CancelledNotification():
+                    params = notification.root.params
+                    logger.info(
+                        f"Request {params.requestId} cancelled"
+                        f"{f': {params.reason}' if params.reason else ''}"
+                    )
+                case types.ProgressNotification():
                     params = notification.root.params
                     if hasattr(params, 'progressToken') and hasattr(params, 'progress'):
                         logger.debug(
                             f"Progress notification: token={params.progressToken}, "
                             f"progress={params.progress}"
                         )
-                case "notifications/initialized":
+                case types.InitializedNotification():
                     logger.debug("Server initialized notification")
-                case "notifications/roots/list_changed":
+                case types.RootsListChangedNotification():
                     logger.debug("Roots list changed notification")
                 case _:
-                    logger.warning(f"Unknown notification method: {notification.root.method}")
+                    logger.warning(f"Unknown notification: {notification.root}")
+
+        except ValidationError as e:
+            logger.error(f"Notification validation error: {e.errors()}")
         except Exception as e:
             logger.error(f"Error handling notification: {e}", exc_info=True)
 
