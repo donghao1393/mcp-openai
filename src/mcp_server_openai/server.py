@@ -27,48 +27,56 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class JSONRPCCancelledNotification(types.Notification):
-    """
-    处理取消请求的通知
-    作为临时解决方案，直到MCP标准支持取消通知
-    """
-    method: str = "cancelled"
-    params: types.NotificationParams
-
 class OpenAIServer(Server):
     """MCP OpenAI服务器实现"""
 
     async def _handle_incoming_message(self, message: Any) -> None:
-        """处理传入消息的自定义逻辑"""
+        """处理传入消息的改进逻辑"""
         try:
+            # 1. 处理取消通知
             if isinstance(message, dict) and message.get("method") == "cancelled":
                 logger.debug("Received cancelled notification")
-                
-                # 记录取消请求的详细信息但不进一步处理
                 params = message.get("params", {})
                 request_id = params.get("requestId", "unknown")
                 reason = params.get("reason", "unknown")
                 logger.info(f"Request {request_id} cancelled: {reason}")
                 return
-            
-            # 对于其他消息，使用父类的处理逻辑
-            if isinstance(message, (RequestResponder, types.ClientNotification)):
-                await super()._received_notification(message)
-                
-        except (BrokenResourceError, ClosedResourceError) as e:
-            logger.debug(f"Connection closed: {e}")
-        except ValidationError as e:
-            logger.debug(f"Validation error: {e}")
-        except Exception as e:
-            logger.warning(f"Error handling message: {e}")
 
-    async def _received_notification(self, notification: Dict[str, Any]) -> None:
-        """处理收到的通知"""
-        try:
-            # 使用自定义的消息处理逻辑
-            await self._handle_incoming_message(notification)
+            # 2. 处理请求响应者
+            if isinstance(message, RequestResponder):
+                await super()._handle_incoming_message(message)
+                return
+
+            # 3. 处理客户端通知
+            if isinstance(message, types.ClientNotification):
+                await self._received_notification(message)
+                return
+
+            # 4. 处理其他消息
+            logger.warning(f"Received unknown message type: {type(message)}")
+
+        except (BrokenResourceError, ClosedResourceError) as e:
+            logger.debug(f"Connection closed during message handling: {e}")
+            raise  # 重新抛出以便上层处理
+        except ValidationError as e:
+            logger.debug(f"Validation error during message handling: {e}")
         except Exception as e:
-            logger.warning(f"Error in notification handling: {e}")
+            logger.error(f"Unexpected error during message handling: {e}", exc_info=True)
+
+    async def _received_notification(self, notification: types.ClientNotification) -> None:
+        """处理收到的通知的改进逻辑"""
+        try:
+            match notification.method:
+                case "notifications/progress":
+                    logger.debug(f"Progress notification: {notification.params}")
+                case "notifications/initialized":
+                    logger.debug("Server initialized notification")
+                case "notifications/roots/list_changed":
+                    logger.debug("Roots list changed notification")
+                case _:
+                    logger.warning(f"Unknown notification method: {notification.method}")
+        except Exception as e:
+            logger.error(f"Error handling notification: {e}", exc_info=True)
 
 def serve(openai_api_key: str) -> OpenAIServer:
     """创建并配置服务器实例"""
@@ -106,7 +114,7 @@ def serve(openai_api_key: str) -> OpenAIServer:
 
     return server
 
-async def run_server(server: OpenAIServer, read_stream: Any, write_stream: Any) -> None:
+async def run_server(server: OpenAIServer) -> None:
     """运行服务器的核心逻辑"""
     try:
         experimental_capabilities = {
@@ -118,20 +126,21 @@ async def run_server(server: OpenAIServer, read_stream: Any, write_stream: Any) 
             }
         }
 
-        # 启动服务器
-        await server.run(
-            read_stream,
-            write_stream,
-            InitializationOptions(
-                server_name="openai-server",
-                server_version="0.3.2",
-                capabilities=server.get_capabilities(
-                    notification_options=NotificationOptions(tools_changed=True),
-                    experimental_capabilities=experimental_capabilities
-                )
-            ),
-            raise_exceptions=False  # 不抛出异常，而是记录它们
-        )
+        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+            # 启动服务器
+            await server.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name="openai-server",
+                    server_version="0.3.2",
+                    capabilities=server.get_capabilities(
+                        notification_options=NotificationOptions(tools_changed=True),
+                        experimental_capabilities=experimental_capabilities
+                    )
+                ),
+                raise_exceptions=True  # 启用异常抛出以便更好地调试
+            )
 
     except (BrokenResourceError, ClosedResourceError) as e:
         logger.debug(f"Connection closed: {e}")
@@ -152,11 +161,11 @@ async def run_server(server: OpenAIServer, read_stream: Any, write_stream: Any) 
 async def _run():
     """服务器启动的核心异步函数"""
     try:
-        async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-            server = serve(sys.argv[1] if len(sys.argv) > 1 else None)
-            await run_server(server, read_stream, write_stream)
+        server = serve(sys.argv[1] if len(sys.argv) > 1 else None)
+        await run_server(server)
     except Exception as e:
         logger.error(f"Fatal error: {e}", exc_info=True)
+        raise  # 重新抛出异常以确保正确的退出状态
 
 @click.command()
 @click.option("--openai-api-key", envvar="OPENAI_API_KEY", required=True)
