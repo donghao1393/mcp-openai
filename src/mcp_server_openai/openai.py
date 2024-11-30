@@ -72,7 +72,6 @@ class OpenAIServer(server.Server):
                 )
             )
 
-    @server.Server.list_tools()  # 这个装饰器可以保留，因为它在SDK中有正确实现
     async def handle_list_tools(self) -> List[types.Tool]:
         """返回支持的工具列表"""
         return self._tools
