@@ -1,5 +1,5 @@
 [project]
-name = "mcp-server-openai"
+name = "openai-service"
 version = "0.1.0"
 description = "MCP server for OpenAI API integration"
 requires-python = ">=3.10"
@@ -17,4 +17,4 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project.scripts]
-mcp-server-openai = "mcp_server_openai.__main__:main"
+openai-service = "mcp_server_openai.server:main"
