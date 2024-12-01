@@ -11,8 +11,9 @@ from typing import List, Optional, Any
 from contextlib import contextmanager
 
 import mcp.types as types
+import anyio
 from .image_utils import compress_image_data
-from .notifications import safe_send_notification
+from .notifications import safe_send_notification, create_progress_notification
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +45,12 @@ def get_progress_token(server) -> Optional[str | int]:
         Optional[str | int]: 进度令牌，如果不可用则返回 None
     """
     try:
-        if (
-            server.request_context 
-            and hasattr(server.request_context, 'meta')
-            and server.request_context.meta is not None
-            and hasattr(server.request_context.meta, 'progressToken')
-        ):
-            return server.request_context.meta.progressToken
+        if hasattr(server, 'request_context') and server.request_context:
+            ctx = server.request_context
+            if hasattr(ctx, 'meta') and ctx.meta and hasattr(ctx.meta, 'progressToken'):
+                token = ctx.meta.progressToken
+                if isinstance(token, (str, int)):
+                    return token
     except Exception as e:
         logger.warning(f"Error getting progress token: {e}")
     return None
@@ -103,33 +103,30 @@ def get_tool_definitions() -> List[types.Tool]:
         )
     ]
 
-async def send_progress(
-    session: Any,
-    progress_token: str | int,
-    progress: float,
-    total: float = 100
-) -> None:
+async def send_progress(session: Any, progress_token: str | int, progress: float, total: float = 100) -> None:
     """
     发送进度通知
     
     Args:
         session: 当前会话
         progress_token: 进度令牌
-        progress: 当前进度
+        progress: 当前进度（0-100）
         total: 总进度（默认100）
     """
+    if not progress_token:
+        return
+        
     try:
-        await safe_send_notification(
-            session,
-            types.ProgressNotification(
-                method="notifications/progress",
-                params=types.ProgressNotificationParams(
-                    progressToken=progress_token,
-                    progress=progress,
-                    total=total
-                )
-            )
+        # 标准化进度值
+        progress = max(0.0, min(float(progress), float(total)))
+        
+        # 创建并发送通知
+        notification = await create_progress_notification(
+            progress_token=progress_token,
+            progress=progress,
+            total=total
         )
+        await safe_send_notification(session, notification)
     except Exception as e:
         logger.warning(f"Failed to send progress notification: {e}")
 
@@ -151,6 +148,7 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
     """处理图像生成请求"""
     timeout = arguments.get("timeout", 60.0)
     max_retries = arguments.get("max_retries", 3)
+    results: List[types.TextContent | types.ImageContent] = []
     
     status_message = (
         f'正在生成图像，超时时间设置为 {timeout} 秒'
@@ -158,15 +156,18 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
     )
     
     logger.info(f"Starting image generation with parameters: {arguments}")
-    
-    response_contents = [types.TextContent(type="text", text=status_message)]
+    results.append(types.TextContent(type="text", text=status_message))
     
     try:
-        # 安全地获取和发送进度通知
-        if progress_token := get_progress_token(server):
+        # 获取进度令牌
+        progress_token = get_progress_token(server)
+        session = getattr(server.request_context, 'session', None)
+
+        if progress_token is not None and session is not None:
             # 开始生成：显示0%进度
-            await send_progress(server.request_context.session, progress_token, 0)
+            await send_progress(session, progress_token, 0)
         
+        # 使用memory_tracker确保资源正确清理
         with memory_tracker("dall-e image generation"):
             logger.debug("Calling OpenAI to generate image...")
             image_data_list = await connector.create_image(
@@ -180,11 +181,11 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
             )
             logger.debug(f"Received {len(image_data_list)} images from OpenAI")
 
-        # 图像生成完成：更新进度到50%
-        if progress_token := get_progress_token(server):
-            await send_progress(server.request_context.session, progress_token, 50)
-        
-        response_contents.append(
+        # 更新生成完成进度
+        if progress_token is not None and session is not None:
+            await send_progress(session, progress_token, 50)
+
+        results.append(
             types.TextContent(
                 type="text",
                 text='已生成 {} 张图像，描述为："{}"'.format(
@@ -194,76 +195,92 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
             )
         )
         
-        for idx, image_data in enumerate(image_data_list, 1):
-            try:
-                logger.debug(f"Processing image {idx}/{len(image_data_list)}")
-                
-                with memory_tracker(f"image processing {idx}"):
-                    # 只处理一个压缩版本的图像
-                    compressed_data, mime_type = compress_image_data(image_data["data"])
-                    encoded_data = base64.b64encode(compressed_data).decode('utf-8')
-                    logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
+        # 使用CancelScope来保护图像处理过程
+        try:
+            async with anyio.CancelScope(shield=True) as scope:
+                for idx, image_data in enumerate(image_data_list, 1):
+                    try:
+                        logger.debug(f"Processing image {idx}/{len(image_data_list)}")
+                        
+                        with memory_tracker(f"image processing {idx}"):
+                            # 压缩图像数据
+                            compressed_data, mime_type = compress_image_data(image_data["data"])
+                            encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+                            logger.debug(f"Image {idx}: Encoded size = {len(encoded_data)} bytes, MIME type = {mime_type}")
 
-                    response_contents.append(
-                        types.ImageContent(
-                            type="image",
-                            data=encoded_data,
-                            mimeType=mime_type
+                            results.append(
+                                types.ImageContent(
+                                    type="image",
+                                    data=encoded_data,
+                                    mimeType=mime_type
+                                )
+                            )
+
+                            results.append(
+                                types.TextContent(
+                                    type="text",
+                                    text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
+                                )
+                            )
+
+                            # 更新进度：50% + (50% * 处理进度)
+                            if progress_token is not None and session is not None:
+                                progress = 50 + (50 * (idx / len(image_data_list)))
+                                await send_progress(session, progress_token, progress)
+
+                            # 在每张图片处理后进行垃圾回收
+                            gc.collect()
+
+                    except Exception as e:
+                        error_msg = f"处理第 {idx} 张图片时出错: {str(e)}"
+                        logger.error(error_msg, exc_info=True)
+                        results.append(
+                            types.TextContent(type="text", text=error_msg)
                         )
-                    )
-
-                    response_contents.append(
-                        types.TextContent(
-                            type="text",
-                            text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
-                        )
-                    )
-
-                # 更新进度：50% + (50% * 当前图片处理进度)
-                if progress_token and len(image_data_list) > 0:
-                    progress = 50 + (50 * (idx / len(image_data_list)))
-                    await send_progress(
-                        server.request_context.session, 
-                        progress_token,
-                        progress
-                    )
-
-                # 在每张图片处理后进行垃圾回收
-                gc.collect()
-
-            except Exception as e:
-                error_msg = f"Failed to process image {idx}: {str(e)}"
-                logger.error(error_msg, exc_info=True)
-                response_contents.append(
-                    types.TextContent(
-                        type="text",
-                        text=error_msg
-                    )
-                )
+                        
+                # 全部完成：更新到100%进度
+                if progress_token is not None and session is not None:
+                    await send_progress(session, progress_token, 100)
+                    
+        except asyncio.CancelledError:
+            logger.warning("Image processing was cancelled")
+            raise
                 
         logger.info("Image generation and processing completed successfully")
-        
-        # 完成所有处理：更新进度到100%
-        if progress_token := get_progress_token(server):
-            await send_progress(server.request_context.session, progress_token, 100)
-            
-        return response_contents
+        return results
         
     except asyncio.CancelledError as e:
         logger.info("Request was cancelled by the client")
         logger.debug(f"Cancellation details: {str(e)}", exc_info=True)
-        return [types.TextContent(type="text", text="请求已取消")]
+        results.append(types.TextContent(type="text", text="请求已取消"))
+        return results
+        
     except TimeoutError as e:
         error_msg = str(e)
         logger.error(f"Image generation timed out: {error_msg}")
-        return [types.TextContent(
-            type="text",
-            text=f"错误: 生成图像请求超时。您可以尝试:\n1. 增加超时时间（timeout参数）\n2. 增加重试次数（max_retries参数）\n3. 简化图像描述\n\n详细错误: {error_msg}"
-        )]
+        results.append(
+            types.TextContent(
+                type="text",
+                text=f"错误: 生成图像请求超时。您可以尝试:\n"
+                     f"1. 增加超时时间（timeout参数）\n"
+                     f"2. 增加重试次数（max_retries参数）\n"
+                     f"3. 简化图像描述\n\n"
+                     f"详细错误: {error_msg}"
+            )
+        )
+        return results
+        
     except Exception as e:
         error_msg = str(e)
         logger.error(f"Error during image generation: {error_msg}", exc_info=True)
-        return [types.TextContent(type="text", text=f"生成图像时出错: {error_msg}")]
+        results.append(
+            types.TextContent(
+                type="text",
+                text=f"生成图像时出错: {error_msg}"
+            )
+        )
+        return results
+        
     finally:
         # 确保最终清理所有资源
         gc.collect()
