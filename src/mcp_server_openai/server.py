@@ -43,26 +43,44 @@ async def run_server(server: OpenAIServer) -> None:
         """监控 stdin 是否关闭的看门狗"""
         try:
             while not shutdown_event.is_set():
-                if sys.stdin.closed:
-                    logger.warning("stdin was closed, initiating shutdown")
-                    shutdown_event.set()
-                    break
-                await asyncio.sleep(1)
+                try:
+                    if sys.stdin.closed:
+                        logger.warning("stdin was closed, initiating shutdown")
+                        shutdown_event.set()
+                        break
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    logger.error(f"Watchdog check error: {e}", exc_info=True)
+                    await asyncio.sleep(1)  # 避免快速循环
         except asyncio.CancelledError:
             logger.debug("Watchdog task cancelled")
-            raise
         except Exception as e:
             logger.error(f"Watchdog error: {e}", exc_info=True)
+        finally:
+            # 确保设置关闭事件
             shutdown_event.set()
-            raise
 
     async def cleanup_tasks(*tasks):
         """清理任务的辅助函数"""
         for task in tasks:
             if task and not task.done():
-                task.cancel()
-                with contextlib.suppress(asyncio.CancelledError):
-                    await task
+                try:
+                    task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await task
+                except Exception as e:
+                    logger.error(f"Error cleaning up task: {e}", exc_info=True)
+
+    async def safe_shutdown(server_instance, server_task=None):
+        """安全关闭服务器"""
+        try:
+            if server_task and not server_task.done():
+                await cleanup_tasks(server_task)
+            await server_instance.shutdown()
+        except Exception as e:
+            logger.error(f"Error during safe shutdown: {e}", exc_info=True)
+        finally:
+            shutdown_complete.set()
 
     try:
         # 设置信号处理
@@ -125,36 +143,34 @@ async def run_server(server: OpenAIServer) -> None:
                         return_when=asyncio.FIRST_COMPLETED
                     )
 
+                    if shutdown_event.is_set():
+                        logger.info("Initiating graceful shutdown...")
+                        await safe_shutdown(server, server_task)
+                    else:
+                        # 检查服务器任务是否有异常
+                        if server_task in done and server_task.exception():
+                            logger.error("Server task failed", exc_info=server_task.exception())
+                        await safe_shutdown(server, server_task)
+
                     # 取消并等待所有pending的任务完成
                     if pending:
                         await cleanup_tasks(*pending)
-
-                    if shutdown_event.is_set():
-                        logger.info("Initiating graceful shutdown...")
-                        # 确保服务器任务被取消（如果还没完成）
-                        if not server_task.done():
-                            await cleanup_tasks(server_task)
-                        
-                        # 执行关闭程序
-                        await server.shutdown()
-                    else:
-                        # 如果是服务器任务自行完成，也要执行关闭流程
-                        await server.shutdown()
-                    
-                    # 设置完成标志
-                    shutdown_complete.set()
                             
                 except asyncio.CancelledError:
                     logger.info("Server task was cancelled")
+                    await safe_shutdown(server, server_task)
                     raise
                 except Exception as e:
                     logger.error(f"Error in server task: {e}", exc_info=True)
+                    await safe_shutdown(server, server_task)
                     raise
 
         except (BrokenResourceError, ClosedResourceError) as e:
             logger.info(f"Connection closed: {e}")
+            await safe_shutdown(server)
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
+            await safe_shutdown(server)
             raise
 
     except Exception as e:
