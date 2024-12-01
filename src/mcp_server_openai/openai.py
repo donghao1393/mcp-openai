@@ -2,7 +2,9 @@
 
 import logging
 import os
+import asyncio
 from typing import Any, Dict, List, Optional, Union, Sequence
+from anyio import fail_after
 
 import mcp.server as server
 import mcp.types as types
@@ -26,6 +28,9 @@ class OpenAIServer(server.Server):
             
         # 初始化连接器
         self.connector = LLMConnector(self.api_key)
+        self._closing = False
+        self._closed = False
+        self._close_event = asyncio.Event()
         
         # 注册处理方法
         self.handlers = {
@@ -41,14 +46,26 @@ class OpenAIServer(server.Server):
         
     async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理OpenAI问答请求"""
+        if self._closed or self._closing:
+            raise RuntimeError("Server is closing or closed")
         return await handle_ask_openai(self.connector, arguments)
         
     async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理图像生成请求"""
+        if self._closed or self._closing:
+            raise RuntimeError("Server is closing or closed")
         return await handle_create_image(self, self.connector, arguments)
 
     async def _handle_tool_request(self, req: types.CallToolRequest) -> types.ServerResult:
         """内部工具请求处理器"""
+        if self._closed or self._closing:
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[types.TextContent(type="text", text="服务器正在关闭")],
+                    isError=True
+                )
+            )
+        
         try:
             if req.params.name not in self.handlers:
                 raise ValueError(f"未知的工具: {req.params.name}")
@@ -76,13 +93,51 @@ class OpenAIServer(server.Server):
         """返回支持的工具列表"""
         return self._tools
 
-    async def shutdown(self) -> None:
-        """关闭服务器"""
+    async def shutdown(self, timeout: float = 30.0) -> None:
+        """
+        关闭服务器，清理资源
+        
+        Args:
+            timeout: 关闭操作的超时时间（秒）
+            
+        Raises:
+            TimeoutError: 如果关闭操作超时
+            RuntimeError: 如果服务器已在关闭过程中
+        """
+        if self._closed:
+            logger.debug("Server already closed")
+            return
+            
+        if self._closing:
+            logger.warning("Server is already closing")
+            await self._close_event.wait()
+            return
+            
+        self._closing = True
         logger.info("关闭OpenAI服务器...")
+        
         try:
-            if hasattr(self, 'connector') and self.connector and hasattr(self.connector, 'close'):
-                await self.connector.close()
-            logger.info("OpenAI服务器关闭完成")
+            async with fail_after(timeout):
+                # 关闭LLM连接器
+                if hasattr(self, 'connector') and self.connector:
+                    try:
+                        await self.connector.close(timeout=timeout/2)
+                    except Exception as e:
+                        logger.error(f"Error closing LLM connector: {e}")
+                        raise
+
+                # 清理其他资源
+                # Note: 目前没有其他需要清理的资源，但保留此处以便未来扩展
+                
+                logger.info("OpenAI服务器关闭完成")
+                
+        except asyncio.TimeoutError:
+            logger.error(f"Server shutdown timed out after {timeout} seconds")
+            raise TimeoutError("Failed to shutdown server within timeout period")
         except Exception as e:
             logger.error(f"服务器关闭过程中发生错误: {e}", exc_info=True)
             raise
+        finally:
+            self._closed = True
+            self._closing = False
+            self._close_event.set()

@@ -7,6 +7,7 @@ import logging
 import base64
 import asyncio
 import random
+import contextlib
 from typing import Union, List, Dict
 from openai import AsyncOpenAI, APITimeoutError
 from anyio import fail_after
@@ -34,8 +35,14 @@ def calculate_backoff_delay(retry: int, base_delay: float = 1.0, jitter: float =
     return max(base_delay, actual_delay)
 
 class LLMConnector:
+    """OpenAI API 连接器"""
+    
     def __init__(self, openai_api_key: str):
+        """初始化连接器"""
         self.client = AsyncOpenAI(api_key=openai_api_key)
+        self._closed = False
+        self._closing = False
+        self._close_event = asyncio.Event()
 
     async def ask_openai(
         self, 
@@ -55,7 +62,13 @@ class LLMConnector:
             
         Returns:
             str: 模型的回答
+            
+        Raises:
+            RuntimeError: 如果连接器已关闭
         """
+        if self._closed:
+            raise RuntimeError("Connector is closed")
+            
         try:
             response = await self.client.chat.completions.create(
                 messages=[
@@ -95,7 +108,14 @@ class LLMConnector:
             
         Returns:
             List[Dict[str, Union[bytes, str]]]: 图像数据列表
+            
+        Raises:
+            RuntimeError: 如果连接器已关闭
+            TimeoutError: 如果请求超时且重试失败
         """
+        if self._closed:
+            raise RuntimeError("Connector is closed")
+            
         current_retry = 0
         last_error = None
         
@@ -158,18 +178,72 @@ class LLMConnector:
         logger.error(error_msg)
         raise TimeoutError(error_msg)
 
-    async def close(self) -> None:
+    async def close(self, timeout: float = 10.0) -> None:
         """
         关闭连接器，清理资源
+        
+        Args:
+            timeout: 关闭操作的超时时间（秒）
+            
+        Raises:
+            TimeoutError: 如果关闭操作超时
+            RuntimeError: 如果连接器已在关闭过程中
         """
+        if self._closed:
+            logger.debug("Connector already closed")
+            return
+            
+        if self._closing:
+            logger.warning("Connector is already closing")
+            await self._close_event.wait()
+            return
+            
+        self._closing = True
+        logger.info("Closing LLM connector...")
+        
         try:
-            # 关闭 aiohttp 会话（如果存在）
-            if hasattr(self.client, 'close') and callable(self.client.close):
-                await self.client.close()
-                logger.debug("Successfully closed OpenAI client session")
-            elif hasattr(self.client, 'aiohttp_session') and self.client.aiohttp_session:
-                await self.client.aiohttp_session.close()
-                logger.debug("Successfully closed aiohttp session")
+            async with fail_after(timeout):
+                # 尝试通过多种方式关闭客户端
+                close_attempts = [
+                    self._close_client_direct,
+                    self._close_http_session,
+                    self._close_connection_pools
+                ]
+                
+                for attempt in close_attempts:
+                    try:
+                        await attempt()
+                    except Exception as e:
+                        logger.warning(f"Error in close attempt: {e}")
+                
+        except asyncio.TimeoutError:
+            logger.error(f"Connector close timed out after {timeout} seconds")
+            raise TimeoutError("Failed to close connector within timeout period")
         except Exception as e:
-            logger.warning(f"Error while closing LLM connector: {e}")
-            # 不抛出异常，让清理流程继续进行
+            logger.error(f"Error closing connector: {e}")
+            raise
+        finally:
+            self._closed = True
+            self._closing = False
+            self._close_event.set()
+            logger.info("LLM connector closed")
+            
+    async def _close_client_direct(self) -> None:
+        """尝试直接关闭客户端"""
+        if hasattr(self.client, 'close') and callable(self.client.close):
+            await self.client.close()
+            logger.debug("Closed OpenAI client directly")
+            
+    async def _close_http_session(self) -> None:
+        """尝试关闭HTTP会话"""
+        if hasattr(self.client, 'aiohttp_session') and self.client.aiohttp_session:
+            await self.client.aiohttp_session.close()
+            logger.debug("Closed aiohttp session")
+            
+    async def _close_connection_pools(self) -> None:
+        """尝试关闭所有连接池"""
+        if hasattr(self.client, '_pools'):
+            for pool in self.client._pools.values():
+                with contextlib.suppress(Exception):
+                    await pool.close()
+            logger.debug("Closed connection pools")
