@@ -11,7 +11,7 @@ from typing import List, Optional, Any
 from contextlib import contextmanager
 
 import mcp.types as types
-import anyio  # 修改：导入整个 anyio 包以使用 get_async_backend
+import anyio  # 导入 anyio 使用其公开 API
 from .image_utils import compress_image_data
 from .notifications import safe_send_notification, create_progress_notification
 
@@ -195,11 +195,10 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
             )
         )
         
-        # 使用CancelScope来保护图像处理过程
+        # 使用move_on_after来保护图像处理过程
         try:
-            # 修改：使用 get_async_backend 来创建 cancel scope
-            cancel_scope = anyio.get_async_backend().create_cancel_scope(shield=True)
-            async with cancel_scope:
+            # 修改：使用 anyio.move_on_after 替代 CancelScope
+            async with anyio.move_on_after(None, shield=True):
                 for idx, image_data in enumerate(image_data_list, 1):
                     try:
                         logger.debug(f"Processing image {idx}/{len(image_data_list)}")
