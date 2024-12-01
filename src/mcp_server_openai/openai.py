@@ -49,17 +49,17 @@ class OpenAIServer(server.Server):
         async def handle_list_tools() -> List[types.Tool]:
             return self._tools
     
-    async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
+    async def _handle_ask_openai(self, connector: LLMConnector, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理OpenAI问答请求"""
         if self._closed or self._closing:
             raise RuntimeError("Server is closing or closed")
-        return await handle_ask_openai(self.connector, arguments)
+        return await handle_ask_openai(connector, arguments)
         
-    async def _handle_create_image(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
+    async def _handle_create_image(self, connector: LLMConnector, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理图像生成请求"""
         if self._closed or self._closing:
             raise RuntimeError("Server is closing or closed")
-        return await handle_create_image(self, self.connector, arguments)
+        return await handle_create_image(connector, arguments)
 
     async def _handle_tool_request(self, req: types.CallToolRequest) -> types.ServerResult:
         """内部工具请求处理器"""
@@ -76,10 +76,7 @@ class OpenAIServer(server.Server):
                 raise ValueError(f"未知的工具: {req.params.name}")
                 
             handler = self.handlers[req.params.name]
-            if req.params.name == "create-image":
-                results = await handler(self, self.connector, req.params.arguments or {})
-            else:
-                results = await handler(self.connector, req.params.arguments or {})
+            results = await handler(self.connector, req.params.arguments or {})
                 
             return types.ServerResult(
                 types.CallToolResult(content=list(results), isError=False)
