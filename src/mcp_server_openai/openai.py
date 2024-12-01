@@ -59,7 +59,7 @@ class OpenAIServer(server.Server):
         """处理图像生成请求"""
         if self._closed or self._closing:
             raise RuntimeError("Server is closing or closed")
-        return await handle_create_image(connector, arguments)
+        return await handle_create_image(self, connector, arguments)
 
     async def _handle_tool_request(self, req: types.CallToolRequest) -> types.ServerResult:
         """内部工具请求处理器"""
