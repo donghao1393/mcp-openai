@@ -64,17 +64,30 @@ async def handle_ask_openai(connector, arguments: dict) -> List[types.TextConten
 async def handle_create_image(server, connector, arguments: dict) -> List[types.TextContent | types.ImageContent]:
     """处理图像生成请求"""
     session = server.request_context.session
-    progress_token = server.request_context.meta.progressToken
+    progress_token = None
+    
+    # 安全地获取 progress_token
+    try:
+        if (server.request_context.meta is not None and
+            hasattr(server.request_context.meta, 'progressToken')):
+            progress_token = server.request_context.meta.progressToken
+    except Exception as e:
+        logger.debug(f"Could not get progress token: {e}")
+    
     results: List[types.TextContent | types.ImageContent] = []
     
-    # 创建通知管理器
-    async with NotificationManager(session) as notification_mgr:
-        try:
-            # 1. 开始处理的提示
-            status_message = '正在生成图像...'
-            results.append(types.TextContent(type="text", text=status_message))
-            
-            if progress_token:
+    # 只在有 progress_token 时创建通知管理器
+    notification_mgr = None
+    if progress_token:
+        notification_mgr = NotificationManager(session)
+        
+    try:
+        # 1. 开始处理的提示
+        status_message = '正在生成图像...'
+        results.append(types.TextContent(type="text", text=status_message))
+        
+        if notification_mgr:
+            async with notification_mgr:
                 await notification_mgr.send_notification(
                     await create_progress_notification(
                         progress_token=progress_token,
@@ -83,103 +96,103 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                     )
                 )
                 
-            # 2. 调用 OpenAI 生成图像
-            logger.info(f"Starting image generation with parameters: {arguments}")
-            image_data_list = await connector.create_image(
-                prompt=arguments["prompt"],
-                model=arguments.get("model", "dall-e-3"),
-                size=arguments.get("size", "1024x1024"),
-                quality=arguments.get("quality", "standard"),
-                n=arguments.get("n", 1)
+        # 2. 调用 OpenAI 生成图像
+        logger.info(f"Starting image generation with parameters: {arguments}")
+        image_data_list = await connector.create_image(
+            prompt=arguments["prompt"],
+            model=arguments.get("model", "dall-e-3"),
+            size=arguments.get("size", "1024x1024"),
+            quality=arguments.get("quality", "standard"),
+            n=arguments.get("n", 1)
+        )
+        logger.debug(f"Received {len(image_data_list)} images from OpenAI")
+        
+        if notification_mgr:
+            await notification_mgr.send_notification(
+                await create_progress_notification(
+                    progress_token=progress_token,
+                    progress=50.0,  # 生成完成
+                    total=100.0
+                )
             )
-            logger.debug(f"Received {len(image_data_list)} images from OpenAI")
+
+        # 3. 处理返回的图像
+        results.append(
+            types.TextContent(
+                type="text",
+                text=f'已生成 {len(image_data_list)} 张图像，描述为："{arguments["prompt"]}"'
+            )
+        )
+
+        # 4. 处理每张图片
+        step_size = 40.0 / len(image_data_list)  # 剩余40%进度分配给图片处理
+        for idx, image_data in enumerate(image_data_list, 1):
+            logger.debug(f"Processing image {idx}/{len(image_data_list)}")
             
-            if progress_token:
+            # 压缩图像
+            compressed_data, mime_type = compress_image_data(image_data["data"])
+            encoded_data = base64.b64encode(compressed_data).decode('utf-8')
+            
+            # 添加图像到结果
+            results.append(
+                types.ImageContent(
+                    type="image",
+                    data=encoded_data,
+                    mimeType=mime_type
+                )
+            )
+            
+            # 添加分隔信息
+            results.append(
+                types.TextContent(
+                    type="text",
+                    text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
+                )
+            )
+            
+            if notification_mgr:
+                current_progress = 50.0 + step_size * idx
                 await notification_mgr.send_notification(
                     await create_progress_notification(
                         progress_token=progress_token,
-                        progress=50.0,  # 生成完成
+                        progress=current_progress,
                         total=100.0
                     )
                 )
 
-            # 3. 处理返回的图像
-            results.append(
-                types.TextContent(
-                    type="text",
-                    text=f'已生成 {len(image_data_list)} 张图像，描述为："{arguments["prompt"]}"'
-                )
+        # 5. 最终成功通知
+        logger.info("Image generation and processing completed successfully")
+        if notification_mgr:
+            await notification_mgr.send_notification(
+                await create_progress_notification(
+                    progress_token=progress_token,
+                    progress=100.0,
+                    total=100.0,
+                    is_final=True
+                ),
+                shield=True  # 确保最终通知被发送
             )
+            
+        return results
 
-            # 4. 处理每张图片
-            step_size = 40.0 / len(image_data_list)  # 剩余40%进度分配给图片处理
-            for idx, image_data in enumerate(image_data_list, 1):
-                logger.debug(f"Processing image {idx}/{len(image_data_list)}")
-                
-                # 压缩图像
-                compressed_data, mime_type = compress_image_data(image_data["data"])
-                encoded_data = base64.b64encode(compressed_data).decode('utf-8')
-                
-                # 添加图像到结果
-                results.append(
-                    types.ImageContent(
-                        type="image",
-                        data=encoded_data,
-                        mimeType=mime_type
-                    )
-                )
-                
-                # 添加分隔信息
-                results.append(
-                    types.TextContent(
-                        type="text",
-                        text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
-                    )
-                )
-                
-                if progress_token:
-                    current_progress = 50.0 + step_size * idx
-                    await notification_mgr.send_notification(
-                        await create_progress_notification(
-                            progress_token=progress_token,
-                            progress=current_progress,
-                            total=100.0
-                        )
-                    )
-
-            # 5. 最终成功通知
-            logger.info("Image generation and processing completed successfully")
-            if progress_token:
+    except Exception as e:
+        error_msg = f"生成图像时出错: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        results.append(types.TextContent(type="text", text=error_msg))
+        
+        # 发送错误状态通知
+        if notification_mgr and not notification_mgr.is_closed:
+            try:
                 await notification_mgr.send_notification(
                     await create_progress_notification(
                         progress_token=progress_token,
-                        progress=100.0,
+                        progress=0.0,
                         total=100.0,
                         is_final=True
                     ),
-                    shield=True  # 确保最终通知被发送
+                    shield=True  # 确保错误通知被发送
                 )
+            except Exception as notify_error:
+                logger.error(f"Failed to send error notification: {notify_error}")
                 
-            return results
-
-        except Exception as e:
-            error_msg = f"生成图像时出错: {str(e)}"
-            logger.error(error_msg, exc_info=True)
-            results.append(types.TextContent(type="text", text=error_msg))
-            
-            # 发送错误状态通知
-            if progress_token and not notification_mgr.is_closed:
-                try:
-                    await notification_mgr.send_notification(
-                        await create_progress_notification(
-                            progress_token=progress_token,
-                            progress=0.0,
-                            total=100.0,
-                            is_final=True
-                        ),
-                        shield=True  # 确保错误通知被发送
-                    )
-                except Exception as notify_error:
-                    logger.error(f"Failed to send error notification: {notify_error}")
-                    
-            return results
+        return results
