@@ -4,7 +4,7 @@ import logging
 import os
 import asyncio
 from typing import Any, Dict, List, Optional, Union, Sequence
-from anyio import fail_after
+from anyio import move_on_after
 
 import mcp.server as server
 import mcp.types as types
@@ -115,7 +115,7 @@ class OpenAIServer(server.Server):
         logger.info("关闭OpenAI服务器...")
         
         try:
-            async with fail_after(timeout):
+            with move_on_after(timeout) as scope:
                 # 关闭LLM连接器
                 if hasattr(self, 'connector') and self.connector:
                     try:
@@ -129,9 +129,10 @@ class OpenAIServer(server.Server):
                 
                 logger.info("OpenAI服务器关闭完成")
                 
-        except asyncio.TimeoutError:
-            logger.error(f"Server shutdown timed out after {timeout} seconds")
-            raise TimeoutError("Failed to shutdown server within timeout period")
+            if scope.cancel_called:
+                logger.error(f"Server shutdown timed out after {timeout} seconds")
+                raise TimeoutError("Failed to shutdown server within timeout period")
+                
         except Exception as e:
             logger.error(f"服务器关闭过程中发生错误: {e}", exc_info=True)
             raise
