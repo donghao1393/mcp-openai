@@ -66,17 +66,72 @@ async def run_server(server: OpenAIServer) -> None:
             if task and not task.done():
                 try:
                     task.cancel()
-                    with contextlib.suppress(asyncio.CancelledError):
-                        await task
+                    try:
+                        # 使用更长的超时时间来等待任务清理
+                        async with asyncio.timeout(5):  # 5秒超时
+                            await task
+                    except (asyncio.TimeoutError, asyncio.CancelledError):
+                        logger.warning(f"Task cleanup timed out or was cancelled for task: {task}")
                 except Exception as e:
                     logger.error(f"Error cleaning up task: {e}", exc_info=True)
+
+    async def handle_connection(server_instance, read_stream, write_stream):
+        """处理单个连接的逻辑"""
+        try:
+            # 设置通知选项
+            notification_options = mcp.server.NotificationOptions(
+                prompts_changed=False,
+                resources_changed=False,
+                tools_changed=True
+            )
+
+            # 设置实验性功能
+            experimental_capabilities = {
+                "messageSize": {
+                    "maxMessageBytes": 32 * 1024 * 1024  # 32MB
+                },
+                "notifications": {
+                    "cancelled": True
+                }
+            }
+
+            # 启动服务器
+            capabilities = server_instance.get_capabilities(
+                notification_options=notification_options,
+                experimental_capabilities=experimental_capabilities
+            )
+            
+            await server_instance.run(
+                read_stream,
+                write_stream,
+                InitializationOptions(
+                    server_name=server_instance.name,
+                    server_version="0.3.2",
+                    capabilities=capabilities
+                )
+            )
+        except asyncio.CancelledError:
+            logger.info("Connection handler was cancelled")
+            raise
+        except Exception as e:
+            logger.error(f"Error in connection handler: {e}", exc_info=True)
+            raise
 
     async def safe_shutdown(server_instance, server_task=None):
         """安全关闭服务器"""
         try:
             if server_task and not server_task.done():
                 await cleanup_tasks(server_task)
-            await server_instance.shutdown()
+            
+            try:
+                # 设置关闭超时
+                async with asyncio.timeout(10):  # 10秒超时
+                    await server_instance.shutdown()
+            except asyncio.TimeoutError:
+                logger.error("Server shutdown timed out")
+            except Exception as e:
+                logger.error(f"Error during server shutdown: {e}", exc_info=True)
+                
         except Exception as e:
             logger.error(f"Error during safe shutdown: {e}", exc_info=True)
         finally:
@@ -92,45 +147,14 @@ async def run_server(server: OpenAIServer) -> None:
         for sig in signals_to_handle:
             original_handlers[sig] = signal.signal(sig, signal_handler)
 
-        # 设置通知选项
-        notification_options = mcp.server.NotificationOptions(
-            prompts_changed=False,
-            resources_changed=False,
-            tools_changed=True
-        )
-
-        # 设置实验性功能
-        experimental_capabilities = {
-            "messageSize": {
-                "maxMessageBytes": 32 * 1024 * 1024  # 32MB
-            },
-            "notifications": {
-                "cancelled": True
-            }
-        }
-
         try:
             # 启动看门狗
             watchdog_task = asyncio.create_task(watchdog())
 
             async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-                # 启动服务器
-                capabilities = server.get_capabilities(
-                    notification_options=notification_options,
-                    experimental_capabilities=experimental_capabilities
-                )
-                
-                # 创建服务器运行任务
+                # 创建连接处理任务
                 server_task = asyncio.create_task(
-                    server.run(
-                        read_stream,
-                        write_stream,
-                        InitializationOptions(
-                            server_name=server.name,
-                            server_version="0.3.2",
-                            capabilities=capabilities
-                        )
-                    )
+                    handle_connection(server, read_stream, write_stream)
                 )
                 
                 # 创建关闭事件等待任务
@@ -145,16 +169,21 @@ async def run_server(server: OpenAIServer) -> None:
 
                     if shutdown_event.is_set():
                         logger.info("Initiating graceful shutdown...")
-                        await safe_shutdown(server, server_task)
-                    else:
-                        # 检查服务器任务是否有异常
-                        if server_task in done and server_task.exception():
+                    elif server_task in done:
+                        if server_task.exception():
                             logger.error("Server task failed", exc_info=server_task.exception())
-                        await safe_shutdown(server, server_task)
+                    
+                    # 执行安全关闭
+                    await safe_shutdown(server, server_task)
 
                     # 取消并等待所有pending的任务完成
-                    if pending:
-                        await cleanup_tasks(*pending)
+                    for task in pending:
+                        if not task.done():
+                            task.cancel()
+                            try:
+                                await task
+                            except (asyncio.CancelledError, Exception) as e:
+                                logger.debug(f"Task cancelled during shutdown: {e}")
                             
                 except asyncio.CancelledError:
                     logger.info("Server task was cancelled")
