@@ -48,7 +48,8 @@ class StreamManager:
             finally:
                 self._closed = True
 
-    async def handle_would_block(self, retries=3, delay=0.1):
+    @contextlib.asynccontextmanager
+    async def would_block_handler(self, retries=3, delay=0.1):
         """处理 WouldBlock 异常的重试逻辑"""
         for i in range(retries):
             try:
@@ -137,8 +138,8 @@ async def run_server(server: OpenAIServer) -> None:
                 experimental_capabilities=experimental_capabilities
             )
 
-            # 使用 StreamManager 的 WouldBlock 处理
-            async with stream_mgr.handle_would_block():
+            # 使用改进后的 would_block_handler
+            async with stream_mgr.would_block_handler():
                 await server_instance.run(
                     stream_mgr.read_stream,
                     stream_mgr.write_stream,
