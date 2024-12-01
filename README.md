@@ -16,16 +16,36 @@
 
 ## 设置方法
 
-在 `claude_desktop_config.json` 中添加：
+### 环境准备
+我们使用 uv 作为依赖管理工具，它提供了更快的包安装和依赖解析速度。如果你还没有安装 uv，可以参考[官方文档](https://github.com/astral-sh/uv)进行安装。
+
+### 配置步骤
+
+1. 克隆仓库并设置环境：
+```bash
+git clone https://github.com/[your-username]/mcp-server-openai
+cd mcp-server-openai
+
+# 使用 uv 创建和激活虚拟环境
+uv venv
+source .venv/bin/activate  # Linux/macOS
+# 或
+.venv\Scripts\activate  # Windows
+
+# 安装依赖
+uv pip install -e .
+```
+
+2. 在 `claude_desktop_config.json` 中添加服务配置：
 
 ```json
 {
   "mcpServers": {
     "openai-server": {
-      "command": "python",
-      "args": ["-m", "src.mcp_server_openai.server"],
+      "command": "uv",
+      "args": ["run", "python", "-m", "mcp_server_openai"],
       "env": {
-        "PYTHONPATH": "C:/path/to/your/mcp-server-openai",
+        "PYTHONPATH": "/path/to/your/mcp-server-openai",
         "OPENAI_API_KEY": "your-key-here"
       }
     }
@@ -34,11 +54,35 @@
 ```
 
 ## 开发
+
+### 开发环境设置
+
+1. 创建开发环境：
 ```bash
-git clone https://github.com/[your-username]/mcp-server-openai
-cd mcp-server-openai
-pip install -e .
+# 创建和激活虚拟环境
+uv venv
+source .venv/bin/activate  # Linux/macOS
+# 或
+.venv\Scripts\activate  # Windows
+
+# 安装开发依赖
+uv pip install -e ".[dev]"
 ```
+
+2. 直接运行服务：
+```bash
+# 使用 Python 模块方式
+uv run python -m mcp_server_openai
+
+# 或使用安装的脚本
+mcp-server-openai
+```
+
+### 开发工具推荐
+
+- VS Code 或 PyCharm 作为 IDE
+- `pylint` 和 `black` 用于代码质量检查和格式化
+- `pytest` 用于单元测试
 
 ## 可用工具
 
@@ -68,7 +112,18 @@ pip install -e .
 3. 用户反馈：在请求过程中，系统会提供清晰的状态更新，包括重试次数和剩余尝试次数。
 4. 错误提示：当所有重试都失败时，系统会提供详细的错误信息和改进建议。
 
+## 测试
+```bash
+# 使用 uv 运行测试
+uv run pytest -v test_openai.py -s
+```
+
 ## 更新说明
+
+V0.3.2
+- 添加了 uv 包管理器支持
+- 优化了项目结构，添加了 __main__.py 入口
+- 更新了文档，增加了 uv 相关的设置和使用说明
 
 V0.3.1
 - 添加了可配置的超时和重试机制
@@ -80,12 +135,6 @@ V0.3.0
 - 实现了图像直接显示在对话中的功能
 - 优化了错误处理和响应格式
 - 更新了文档和测试用例
-
-## 测试
-```python
-# 在项目根目录运行测试
-pytest -v test_openai.py -s
-```
 
 ## 许可证
 MIT 许可证
@@ -100,3 +149,18 @@ MIT 许可证
    - 考虑使用 DALL·E 2 模型，其响应时间通常更短
 
 3. 在批量生成图像时，建议适当增加超时时间，每张图像预留至少 60 秒的处理时间。
+
+## 故障排除
+
+如果遇到服务启动问题，请检查：
+
+1. 虚拟环境是否正确激活
+2. 是否正确安装了所有依赖
+3. PYTHONPATH 是否正确设置
+4. OpenAI API key 是否有效
+
+对于常见错误：
+
+- `ModuleNotFoundError`: 检查 PYTHONPATH 设置和依赖安装
+- `ImportError`: 使用 `uv pip list` 验证包安装状态
+- 启动失败: 检查 Python 版本是否满足要求 (>=3.10)
