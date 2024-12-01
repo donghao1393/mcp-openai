@@ -11,6 +11,7 @@ import traceback
 import signal
 import anyio
 from anyio import BrokenResourceError, ClosedResourceError
+import contextlib
 
 import mcp.server
 import mcp.server.stdio
@@ -29,6 +30,7 @@ async def run_server(server: OpenAIServer) -> None:
     # 创建关闭事件
     shutdown_event = asyncio.Event()
     shutdown_complete = asyncio.Event()
+    watchdog_task = None
     
     def signal_handler(signum, frame):
         """同步信号处理函数"""
@@ -46,9 +48,21 @@ async def run_server(server: OpenAIServer) -> None:
                     shutdown_event.set()
                     break
                 await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            logger.debug("Watchdog task cancelled")
+            raise
         except Exception as e:
             logger.error(f"Watchdog error: {e}", exc_info=True)
             shutdown_event.set()
+            raise
+
+    async def cleanup_tasks(*tasks):
+        """清理任务的辅助函数"""
+        for task in tasks:
+            if task and not task.done():
+                task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await task
 
     try:
         # 设置信号处理
@@ -78,68 +92,64 @@ async def run_server(server: OpenAIServer) -> None:
         }
 
         try:
-            async with anyio.create_task_group() as tg:
-                # 启动看门狗
-                tg.start_soon(watchdog)
+            # 启动看门狗
+            watchdog_task = asyncio.create_task(watchdog())
 
-                async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
-                    # 启动服务器
-                    capabilities = server.get_capabilities(
-                        notification_options=notification_options,
-                        experimental_capabilities=experimental_capabilities
-                    )
-                    
-                    # 创建服务器运行任务
-                    server_task = asyncio.create_task(
-                        server.run(
-                            read_stream,
-                            write_stream,
-                            InitializationOptions(
-                                server_name=server.name,
-                                server_version="0.3.2",
-                                capabilities=capabilities
-                            )
+            async with mcp.server.stdio.stdio_server() as (read_stream, write_stream):
+                # 启动服务器
+                capabilities = server.get_capabilities(
+                    notification_options=notification_options,
+                    experimental_capabilities=experimental_capabilities
+                )
+                
+                # 创建服务器运行任务
+                server_task = asyncio.create_task(
+                    server.run(
+                        read_stream,
+                        write_stream,
+                        InitializationOptions(
+                            server_name=server.name,
+                            server_version="0.3.2",
+                            capabilities=capabilities
                         )
                     )
-                    
-                    # 创建关闭事件等待任务
-                    shutdown_task = asyncio.create_task(shutdown_event.wait())
-                    
-                    try:
-                        # 等待任务完成或收到关闭信号
-                        done, pending = await asyncio.wait(
-                            [server_task, shutdown_task],
-                            return_when=asyncio.FIRST_COMPLETED
-                        )
+                )
+                
+                # 创建关闭事件等待任务
+                shutdown_task = asyncio.create_task(shutdown_event.wait())
+                
+                try:
+                    # 等待任务完成或收到关闭信号
+                    done, pending = await asyncio.wait(
+                        [server_task, shutdown_task],
+                        return_when=asyncio.FIRST_COMPLETED
+                    )
 
-                        # 取消所有pending的任务
-                        for task in pending:
-                            task.cancel()
+                    # 取消并等待所有pending的任务完成
+                    if pending:
+                        await cleanup_tasks(*pending)
+
+                    if shutdown_event.is_set():
+                        logger.info("Initiating graceful shutdown...")
+                        # 确保服务器任务被取消（如果还没完成）
+                        if not server_task.done():
+                            await cleanup_tasks(server_task)
                         
-                        # 等待它们完成取消
-                        if pending:
-                            await asyncio.wait(pending)
-
-                        if shutdown_event.is_set():
-                            logger.info("Initiating graceful shutdown...")
-                            # 取消服务器任务（如果还没被取消）
-                            if not server_task.done():
-                                server_task.cancel()
-                                try:
-                                    await server_task
-                                except asyncio.CancelledError:
-                                    pass
+                        # 执行关闭程序
+                        await server.shutdown()
+                    else:
+                        # 如果是服务器任务自行完成，也要执行关闭流程
+                        await server.shutdown()
+                    
+                    # 设置完成标志
+                    shutdown_complete.set()
                             
-                            # 执行关闭程序
-                            await server.shutdown()
-                            shutdown_complete.set()
-                            
-                    except asyncio.CancelledError:
-                        logger.info("Server task was cancelled")
-                        raise
-                    except Exception as e:
-                        logger.error(f"Error in server task: {e}", exc_info=True)
-                        raise
+                except asyncio.CancelledError:
+                    logger.info("Server task was cancelled")
+                    raise
+                except Exception as e:
+                    logger.error(f"Error in server task: {e}", exc_info=True)
+                    raise
 
         except (BrokenResourceError, ClosedResourceError) as e:
             logger.info(f"Connection closed: {e}")
@@ -151,6 +161,9 @@ async def run_server(server: OpenAIServer) -> None:
         if not isinstance(e, (KeyboardInterrupt, SystemExit)):
             logger.error(f"Unexpected error: {e}", exc_info=True)
     finally:
+        # 清理所有剩余任务
+        await cleanup_tasks(watchdog_task)
+        
         # 恢复原始信号处理器
         for sig, handler in original_handlers.items():
             try:
