@@ -102,21 +102,33 @@ async def run_server(server: OpenAIServer) -> None:
                         )
                     )
                     
+                    # 创建关闭事件等待任务
+                    shutdown_task = asyncio.create_task(shutdown_event.wait())
+                    
                     try:
-                        # 等待服务器任务完成或收到关闭信号
-                        await asyncio.wait(
-                            [server_task, shutdown_event.wait()],
+                        # 等待任务完成或收到关闭信号
+                        done, pending = await asyncio.wait(
+                            [server_task, shutdown_task],
                             return_when=asyncio.FIRST_COMPLETED
                         )
 
+                        # 取消所有pending的任务
+                        for task in pending:
+                            task.cancel()
+                        
+                        # 等待它们完成取消
+                        if pending:
+                            await asyncio.wait(pending)
+
                         if shutdown_event.is_set():
                             logger.info("Initiating graceful shutdown...")
-                            # 取消服务器任务
-                            server_task.cancel()
-                            try:
-                                await server_task
-                            except asyncio.CancelledError:
-                                pass
+                            # 取消服务器任务（如果还没被取消）
+                            if not server_task.done():
+                                server_task.cancel()
+                                try:
+                                    await server_task
+                                except asyncio.CancelledError:
+                                    pass
                             
                             # 执行关闭程序
                             await server.shutdown()

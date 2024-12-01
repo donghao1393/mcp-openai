@@ -82,9 +82,7 @@ class OpenAIServer(server.Server):
         try:
             if hasattr(self, 'connector') and self.connector and hasattr(self.connector, 'close'):
                 await self.connector.close()
-            await super().shutdown()  # 调用父类的shutdown方法
             logger.info("OpenAI服务器关闭完成")
         except Exception as e:
             logger.error(f"服务器关闭过程中发生错误: {e}", exc_info=True)
-            # 不要吞掉异常，让调用者知道发生了错误
             raise
