@@ -40,10 +40,15 @@ class OpenAIServer(server.Server):
         
         # 设置工具定义
         self._tools = get_tool_definitions()
-
-        # 注册工具处理方法
+        
+        # 注册tool请求处理器
         self.request_handlers[types.CallToolRequest] = self._handle_tool_request
         
+        # 注册list_tools处理器
+        @self.list_tools()
+        async def handle_list_tools() -> List[types.Tool]:
+            return self._tools
+    
     async def _handle_ask_openai(self, arguments: Dict[str, Any]) -> List[Union[types.TextContent, types.ImageContent]]:
         """处理OpenAI问答请求"""
         if self._closed or self._closing:
@@ -88,10 +93,6 @@ class OpenAIServer(server.Server):
                     isError=True
                 )
             )
-
-    async def handle_list_tools(self) -> List[types.Tool]:
-        """返回支持的工具列表"""
-        return self._tools
 
     async def shutdown(self, timeout: float = 30.0) -> None:
         """
