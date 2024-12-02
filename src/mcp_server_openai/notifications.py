@@ -47,6 +47,7 @@ async def create_progress_notification(
         method="notifications/progress",
         params=params
     )
+    logger.debug(f"Created progress notification: {notification}")
     return ServerNotification(root=notification)
 
 class NotificationManager:
@@ -55,6 +56,8 @@ class NotificationManager:
     def __init__(self, session: Any):
         self.session = session
         self._closed = False
+        self._debug_id = id(self)  # 添加一个调试ID
+        logger.debug(f"Creating NotificationManager {self._debug_id}")
         
     @property
     def is_closed(self) -> bool:
@@ -62,6 +65,7 @@ class NotificationManager:
         
     async def close(self):
         """标记通知管理器为已关闭"""
+        logger.debug(f"Closing NotificationManager {self._debug_id}")
         self._closed = True
         
     async def send_notification(
@@ -81,11 +85,11 @@ class NotificationManager:
             bool: 通知是否成功发送
         """
         if self.is_closed:
-            logger.debug("NotificationManager is closed, skipping notification")
+            logger.debug(f"NotificationManager {self._debug_id} is closed, skipping notification: {notification}")
             return False
             
         if not self.session or not hasattr(self.session, 'send_notification'):
-            logger.warning("Invalid session for sending notification")
+            logger.warning(f"NotificationManager {self._debug_id} has invalid session for notification: {notification}")
             return False
         
         async def _send() -> bool:
@@ -103,38 +107,45 @@ class NotificationManager:
                         if params.total is not None and not isinstance(params.total, (int, float)):
                             logger.error(f"Invalid total value type: {type(params.total)}")
                             return False
+
+                        logger.debug(f"NotificationManager {self._debug_id} sending progress notification: progress={params.progress}, total={params.total}")
                             
                     except Exception as e:
                         logger.error(f"Invalid progress notification format: {e}")
                         return False
 
                 await self.session.send_notification(notification)
+                logger.debug(f"NotificationManager {self._debug_id} successfully sent notification")
                 return True
 
             except ValidationError as e:
-                logger.warning(f"Notification validation error: {e.errors()}")
+                logger.warning(f"NotificationManager {self._debug_id} notification validation error: {e.errors()}")
                 return False
             except (BrokenResourceError, ClosedResourceError):
-                logger.debug("Session closed while sending notification")
+                logger.debug(f"NotificationManager {self._debug_id} session closed while sending notification")
                 return False
             except Exception as e:
-                logger.error(f"Failed to send notification: {e}", exc_info=True)
+                logger.error(f"NotificationManager {self._debug_id} failed to send notification: {e}", exc_info=True)
                 return False
                 
         if shield:
             try:
+                logger.debug(f"NotificationManager {self._debug_id} sending notification with shield")
                 async with anyio.CancelScope(shield=True):
                     return await _send()
             except Exception as e:
-                logger.error(f"Error in shielded notification send: {e}")
+                logger.error(f"NotificationManager {self._debug_id} error in shielded notification send: {e}")
                 return False
         else:
+            logger.debug(f"NotificationManager {self._debug_id} sending notification without shield")
             return await _send()
             
     async def __aenter__(self):
         """异步上下文管理器入口"""
+        logger.debug(f"Entering NotificationManager {self._debug_id} context")
         return self
         
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         """异步上下文管理器出口，确保清理"""
+        logger.debug(f"Exiting NotificationManager {self._debug_id} context: exc_type={exc_type}")
         await self.close()
