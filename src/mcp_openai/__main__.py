@@ -2,7 +2,7 @@
 """
 Main entry point for the OpenAI MCP server
 """
-from mcp_server_openai.server import main
+from mcp_openai.server import main
 
 if __name__ == "__main__":
     main()

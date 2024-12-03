@@ -1,6 +1,6 @@
 import os
 import pytest
-from src.mcp_server_openai.llm import LLMConnector
+from src.mcp_openai.llm import LLMConnector
 
 @pytest.mark.asyncio
 async def test_ask_openai():
