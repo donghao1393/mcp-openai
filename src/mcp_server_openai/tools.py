@@ -37,10 +37,37 @@ def get_tool_definitions() -> List[types.Tool]:
                 "type": "object",
                 "properties": {
                     "prompt": {"type": "string", "description": "图像描述"},
-                    "model": {"type": "string", "default": "dall-e-3", "enum": ["dall-e-3", "dall-e-2"]},
-                    "size": {"type": "string", "default": "1024x1024", "enum": ["1024x1024", "512x512", "256x256"]},
-                    "quality": {"type": "string", "default": "standard", "enum": ["standard", "hd"]},
-                    "n": {"type": "integer", "default": 1, "minimum": 1, "maximum": 10}
+                    "model": {
+                        "type": "string", 
+                        "default": "dall-e-3", 
+                        "enum": ["dall-e-3", "dall-e-2"],
+                        "description": "模型选择，DALL·E 3支持更多尺寸"
+                    },
+                    "size": {
+                        "type": "string", 
+                        "default": "1024x1024",
+                        "enum": [
+                            # 方形图片
+                            "1024x1024", "512x512", "256x256",
+                            # DALL·E 3支持的新尺寸
+                            "1792x1024",  # 横屏, ≈16:9
+                            "1024x1792"   # 竖屏, ≈9:16
+                        ],
+                        "description": "图片尺寸。DALL·E 3支持更多尺寸选项，包括横屏(1792x1024)和竖屏(1024x1792)"
+                    },
+                    "quality": {
+                        "type": "string", 
+                        "default": "standard", 
+                        "enum": ["standard", "hd"],
+                        "description": "图片质量，仅DALL·E 3支持hd选项"
+                    },
+                    "n": {
+                        "type": "integer", 
+                        "default": 1, 
+                        "minimum": 1, 
+                        "maximum": 10,
+                        "description": "生成图片数量"
+                    }
                 },
                 "required": ["prompt"]
             }
@@ -82,8 +109,18 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         notification_mgr = NotificationManager(session)
         
     try:
+        # 检查模型和尺寸是否兼容
+        model = arguments.get("model", "dall-e-3")
+        size = arguments.get("size", "1024x1024")
+        
+        if model == "dall-e-2" and size in ["1792x1024", "1024x1792"]:
+            error_msg = "DALL·E 2不支持横屏(1792x1024)和竖屏(1024x1792)尺寸，这些尺寸仅在DALL·E 3中可用"
+            logger.warning(error_msg)
+            return [types.TextContent(type="text", text=error_msg)]
+        
         # 1. 开始处理的提示
-        status_message = '正在生成图像...'
+        orientation = "横屏" if size == "1792x1024" else "竖屏" if size == "1024x1792" else "方形"
+        status_message = f'正在生成{orientation}图像 ({size})...'
         results.append(types.TextContent(type="text", text=status_message))
         
         if notification_mgr:
@@ -100,8 +137,8 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         logger.info(f"Starting image generation with parameters: {arguments}")
         image_data_list = await connector.create_image(
             prompt=arguments["prompt"],
-            model=arguments.get("model", "dall-e-3"),
-            size=arguments.get("size", "1024x1024"),
+            model=model,
+            size=size,
             quality=arguments.get("quality", "standard"),
             n=arguments.get("n", 1)
         )
@@ -120,7 +157,7 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         results.append(
             types.TextContent(
                 type="text",
-                text=f'已生成 {len(image_data_list)} 张图像，描述为："{arguments["prompt"]}"'
+                text=f'已生成 {len(image_data_list)} 张{orientation}图像 ({size})，描述为："{arguments["prompt"]}"'
             )
         )
 
