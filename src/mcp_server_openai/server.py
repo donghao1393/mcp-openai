@@ -20,10 +20,12 @@ from .openai import OpenAIServer
 
 # 配置日志记录
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.INFO,  # 更改为INFO级别
     format='%(asctime)s [%(levelname)s] %(name)s: %(message)s'
 )
 logger = logging.getLogger(__name__)
+# 为MCP服务器相关模块设置更严格的日志级别
+logging.getLogger('mcp.server').setLevel(logging.WARNING)
 
 class StreamManager:
     """流管理器，用于处理读写流的生命周期"""
@@ -115,11 +117,11 @@ async def run_server(server: OpenAIServer) -> None:
     async def handle_connection(server_instance, stream_mgr):
         """处理单个连接的逻辑"""
         try:
-            # 设置通知选项
+            # 设置通知选项 - 全部禁用轮询
             notification_options = mcp.server.NotificationOptions(
                 prompts_changed=False,
                 resources_changed=False,
-                tools_changed=True
+                tools_changed=False
             )
 
             # 设置实验性功能
@@ -213,11 +215,8 @@ async def run_server(server: OpenAIServer) -> None:
                         return_when=asyncio.FIRST_COMPLETED
                     )
 
-                    if shutdown_event.is_set():
-                        logger.info("Initiating graceful shutdown...")
-                    elif server_task in done:
-                        if server_task.exception():
-                            logger.error("Server task failed", exc_info=server_task.exception())
+                    if server_task in done and server_task.exception():
+                        logger.error("Server task failed", exc_info=server_task.exception())
                     
                     # 执行安全关闭
                     await safe_shutdown(server, server_task)
@@ -228,11 +227,10 @@ async def run_server(server: OpenAIServer) -> None:
                             task.cancel()
                             try:
                                 await task
-                            except (asyncio.CancelledError, Exception) as e:
-                                logger.debug(f"Task cancelled during shutdown: {e}")
+                            except (asyncio.CancelledError, Exception):
+                                pass
                             
                 except asyncio.CancelledError:
-                    logger.info("Server task was cancelled")
                     await safe_shutdown(server, server_task)
                     raise
                 except Exception as e:
@@ -240,8 +238,7 @@ async def run_server(server: OpenAIServer) -> None:
                     await safe_shutdown(server, server_task)
                     raise
 
-        except (BrokenResourceError, ClosedResourceError) as e:
-            logger.info(f"Connection closed: {e}")
+        except (BrokenResourceError, ClosedResourceError):
             await safe_shutdown(server)
         except Exception as e:
             logger.error(f"Server error: {e}", exc_info=True)
