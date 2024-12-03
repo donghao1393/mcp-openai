@@ -219,18 +219,30 @@ response = await client.ask_openai(
 
 - `prompt`: 您想要生成的图像描述
 - `model`: 可选择 "dall-e-3" 或 "dall-e-2"
-- `size`: 图像尺寸，可选 "1024x1024"、"512x512" 或 "256x256"
-- `quality`: 图像质量，可选 "standard" 或 "hd"
+- `size`: 图像尺寸
+  - DALL·E 3支持: "1024x1024"(方形)、"1792x1024"(横屏)、"1024x1792"(竖屏)
+  - DALL·E 2支持: "1024x1024"、"512x512"、"256x256"
+- `quality`: 图像质量，可选 "standard" 或 "hd"（仅DALL·E 3支持hd选项）
 - `n`: 生成图像的数量，范围为 1-10
 
 示例：
 
 ```python
+# 生成横屏图像
 images = await client.create_image(
     prompt="一只在月光下奔跑的狼",
     model="dall-e-3",
-    size="1024x1024",
+    size="1792x1024",  # 横屏尺寸
     quality="hd",
+    n=1
+)
+
+# 生成竖屏图像
+images = await client.create_image(
+    prompt="一座古老的灯塔",
+    model="dall-e-3",
+    size="1024x1792",  # 竖屏尺寸
+    quality="standard",
     n=1
 )
 ```
