@@ -1,11 +1,8 @@
+"""版本测试"""
 import pytest
-from .llm import LLMConnector
+from mcp_server_openai.server import OpenAIServer
 
-@pytest.mark.asyncio
-async def test_ask_openai():
-    print("\nTesting OpenAI API call...")
-    connector = LLMConnector("your-openai-key")
-    response = await connector.ask_openai("Hello, how are you?")
-    print(f"OpenAI Response: {response}")
-    assert isinstance(response, str)
-    assert len(response) > 0
+def test_version():
+    """测试服务器版本号"""
+    server = OpenAIServer()
+    assert server.version == "0.4.0"

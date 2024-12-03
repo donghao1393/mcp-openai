@@ -1,10 +1,11 @@
 # OpenAI MCP Server
 
-MCP protocol integration that enables direct invocation of OpenAI models from Claude for conversations and image generation. Supports in-chat image display with configurable timeouts and retry mechanisms.
+A MCP server implementation for direct interaction with OpenAI models through Claude. Supports text and image generation, with built-in image display, original image download links, and configurable timeout/retry mechanisms.
 
-## Architecture
+## Architecture Design
 
 ### Overall Architecture
+
 ```
                                     +-----------------+
                                     |                 |
@@ -47,21 +48,22 @@ MCP protocol integration that enables direct invocation of OpenAI models from Cl
 ### Core Components
 
 1. **Server Core**
+
    - Implements the MCP protocol
    - Handles request routing and lifecycle management
    - Provides configuration management and error handling
-
 2. **Request Handler**
+
    - Processes specific request types
    - Implements request parameter validation and transformation
    - Manages request timeouts and retry logic
-
 3. **Notification Manager**
+
    - Manages notification lifecycle
    - Implements reliable notification delivery
    - Handles notification cancellation and cleanup
-
 4. **OpenAI Client**
+
    - Encapsulates OpenAI API calls
    - Handles response transformation and error handling
    - Implements API rate limiting and retry strategies
@@ -69,23 +71,33 @@ MCP protocol integration that enables direct invocation of OpenAI models from Cl
 ## Features
 
 ### Text Generation
-- Supports GPT-4 and GPT-3.5-turbo models
-- Configurable temperature and response length parameters
-- Stream response support
+
+- Support for GPT-4 and GPT-3.5-turbo models
+- Adjustable temperature and response length
+- Streaming response support
 
 ### Image Generation
-- Supports DALL·E 2 and DALL·E 3
-- Direct in-chat image display
+
+- Support for DALL·E 2 and DALL·E 3
+- Smart image display:
+  - Compressed images in chat
+  - Original image download links
+- Multiple size options:
+  - DALL·E 2/3 common: 1024x1024, 512x512, 256x256
+  - DALL·E 3 exclusive: 1792x1024 (landscape), 1024x1792 (portrait)
+- HD quality option (DALL·E 3)
+- Generation progress feedback
+- Batch generation support (up to 10 images)
 - Configurable timeout and retry mechanisms
-- Multiple image sizes and quality options
-- Batch image generation capability
 
 ## Technical Implementation
 
 ### Asynchronous Processing
+
 The project uses `anyio` as the async runtime, supporting both asyncio and trio. Key async processing includes:
 
 1. Request Handling
+
 ```python
 async def handle_request(self, request: Request) -> Response:
     async with anyio.create_task_group() as tg:
@@ -95,6 +107,7 @@ async def handle_request(self, request: Request) -> Response:
 ```
 
 2. Notification Management
+
 ```python
 class NotificationManager:
     async def __aenter__(self):
@@ -106,6 +119,7 @@ class NotificationManager:
 ```
 
 3. Timeout Control
+
 ```python
 async def with_timeout(timeout: float):
     async with anyio.move_on_after(timeout) as scope:
@@ -115,6 +129,7 @@ async def with_timeout(timeout: float):
 ### Error Handling Strategy
 
 1. Request Layer Error Handling
+
 ```python
 try:
     response = await self.process_request(request)
@@ -125,6 +140,7 @@ except Exception as e:
 ```
 
 2. API Call Retry Mechanism
+
 ```python
 async def call_api_with_retry(self, func, *args, **kwargs):
     for attempt in range(self.max_retries):
@@ -136,19 +152,21 @@ async def call_api_with_retry(self, func, *args, **kwargs):
             await self.wait_before_retry(attempt)
 ```
 
-## Setup Guide
+## Setup
 
-### Environment Preparation
-We use uv as the dependency management tool, offering faster package installation and dependency resolution. If you haven't installed uv, please refer to the [official documentation](https://github.com/astral-sh/uv).
+### Environment
+
+We use uv for dependency management, offering faster package installation and dependency resolution. If you haven't installed uv, refer to the [official documentation](https://github.com/astral-sh/uv).
 
 ### Configuration Steps
 
-1. Clone repository and set up environment:
+1. Clone and setup:
+
 ```bash
 git clone https://github.com/donghao1393/mcp-openai
 cd mcp-openai
 
-# Create and activate virtual environment using uv
+# Create and activate venv with uv
 uv venv
 source .venv/bin/activate  # Linux/macOS
 # or
@@ -158,7 +176,8 @@ source .venv/bin/activate  # Linux/macOS
 uv pip install -e .
 ```
 
-2. Add service configuration to `claude_desktop_config.json`:
+2. Add server config to `claude_desktop_config.json`:
+
 ```json
 {
   "mcpServers": {
@@ -181,13 +200,16 @@ uv pip install -e .
 ## Available Tools
 
 ### 1. ask-openai
-This tool provides interaction with OpenAI language models:
+
+OpenAI language model interaction:
+
 - `query`: Your question or prompt
-- `model`: Choose between "gpt-4" or "gpt-3.5-turbo"
-- `temperature`: Controls response randomness, range 0-2
-- `max_tokens`: Maximum response length, range 1-4000
+- `model`: "gpt-4" or "gpt-3.5-turbo"
+- `temperature`: Randomness control (0-2)
+- `max_tokens`: Response length (1-4000)
 
 Example:
+
 ```python
 response = await client.ask_openai(
     query="Explain quantum computing",
@@ -198,20 +220,35 @@ response = await client.ask_openai(
 ```
 
 ### 2. create-image
-This tool provides DALL·E image generation functionality:
-- `prompt`: Description of the image you want to generate
-- `model`: Choose between "dall-e-3" or "dall-e-2"
-- `size`: Image size, options: "1024x1024", "512x512", or "256x256"
-- `quality`: Image quality, options: "standard" or "hd"
-- `n`: Number of images to generate, range 1-10
+
+DALL·E image generation with compressed display and original download links:
+
+- `prompt`: Image description
+- `model`: "dall-e-3" or "dall-e-2"
+- `size`: Image dimensions:
+  - DALL·E 3: "1024x1024" (square), "1792x1024" (landscape), "1024x1792" (portrait)
+  - DALL·E 2: "1024x1024", "512x512", "256x256" only
+- `quality`: "standard" or "hd" (DALL·E 3 only)
+- `n`: Number of images (1-10)
 
 Example:
+
 ```python
+# Landscape image
 images = await client.create_image(
     prompt="A wolf running under moonlight",
     model="dall-e-3",
-    size="1024x1024",
+    size="1792x1024",
     quality="hd",
+    n=1
+)
+
+# Portrait image
+images = await client.create_image(
+    prompt="An ancient lighthouse",
+    model="dall-e-3",
+    size="1024x1792",
+    quality="standard",
     n=1
 )
 ```
@@ -219,17 +256,20 @@ images = await client.create_image(
 ## Development Guide
 
 ### Code Standards
+
 1. **Python Code Style**
+
    - Follow PEP 8 guidelines
    - Use black for code formatting
    - Use pylint for code quality checking
-
 2. **Async Programming Standards**
+
    - Use async/await syntax
    - Properly handle async context managers
    - Appropriate use of task groups and cancel scopes
 
 ### Recommended Development Tools
+
 - VS Code or PyCharm as IDE
 - `pylint` and `black` for code quality checking and formatting
 - `pytest` for unit testing
@@ -237,46 +277,57 @@ images = await client.create_image(
 ## Troubleshooting
 
 ### Common Issues
-1. Service Startup Issues
+
+1. Startup Issues
+
    - Check virtual environment activation
-   - Verify all dependencies installation
+   - Verify dependency installation
    - Confirm PYTHONPATH setting
    - Validate OpenAI API key
-
 2. Runtime Errors
-   - ModuleNotFoundError: Check PYTHONPATH and dependency installation
-   - ImportError: Use `uv pip list` to verify package installation
+
+   - ModuleNotFoundError: Check PYTHONPATH and dependencies
+   - ImportError: Use `uv pip list` to verify packages
    - Startup failure: Check Python version (>=3.10)
 
-### Performance Optimization Tips
-1. For complex image generation tasks:
-   - Increase timeout parameter appropriately, especially with DALL·E 3
-   - Adjust max_retries parameter
-   - Simplify image descriptions
-   - Consider using DALL·E 2 for faster response times
+### Performance Tips
 
-2. Batch Task Processing:
-   - Allow at least 60 seconds processing time per image
+1. For Complex Image Generation:
+
+   - Increase timeout for DALL·E 3
+   - Adjust max_retries
+   - Simplify image descriptions
+   - Consider DALL·E 2 for faster response
+2. Batch Processing:
+
+   - Allow 60 seconds per image
    - Use appropriate concurrency control
-   - Implement request queuing and rate limiting
+   - Implement request queuing
 
 ## Version History
 
-### V0.3.2 (Current)
+### V0.4.0 (Current)
+
+- Refactored image generation to use OpenAI native URLs
+- Added original image download links
+- Optimized image compression workflow
+- Added DALL·E 3 landscape/portrait sizes
 - Added uv package manager support
-- Optimized project structure
 - Improved async operation stability
-- Enhanced error handling mechanisms
+- Enhanced error handling
 
 ### V0.3.1
-- Added configurable timeout and retry mechanisms
+
+- Added configurable timeout and retry
 - Optimized image generation error handling
-- Enhanced user feedback information detail
+- Enhanced user feedback detail
 
 ### V0.3.0
-- Implemented direct image display in conversations
+
+- Implemented in-chat image display
 - Optimized error handling and response format
-- Introduced anyio-based async processing framework
+- Introduced anyio-based async framework
 
 ## License
+
 MIT License
