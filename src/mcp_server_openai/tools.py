@@ -5,6 +5,7 @@ MCP Server OpenAI tools模块
 
 import logging
 import base64
+import aiohttp
 from typing import List
 
 import mcp.types as types
@@ -32,7 +33,7 @@ def get_tool_definitions() -> List[types.Tool]:
         ),
         types.Tool(
             name="create-image",
-            description="使用 DALL·E 生成图像，直接在对话中显示",
+            description="使用 DALL·E 生成图像",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -47,11 +48,8 @@ def get_tool_definitions() -> List[types.Tool]:
                         "type": "string", 
                         "default": "1024x1024",
                         "enum": [
-                            # 方形图片
                             "1024x1024", "512x512", "256x256",
-                            # DALL·E 3支持的新尺寸
-                            "1792x1024",  # 横屏, ≈16:9
-                            "1024x1792"   # 竖屏, ≈9:16
+                            "1792x1024", "1024x1792"
                         ],
                         "description": "图片尺寸。DALL·E 3支持更多尺寸选项，包括横屏(1792x1024)和竖屏(1024x1792)"
                     },
@@ -88,12 +86,17 @@ async def handle_ask_openai(connector, arguments: dict) -> List[types.TextConten
         logger.error(f"Error in ask_openai: {e}", exc_info=True)
         raise
 
+async def download_image(url: str) -> bytes:
+    """从URL下载图片"""
+    async with aiohttp.ClientSession() as session:
+        async with session.get(url) as response:
+            return await response.read()
+
 async def handle_create_image(server, connector, arguments: dict) -> List[types.TextContent | types.ImageContent]:
     """处理图像生成请求"""
     session = server.request_context.session
     progress_token = None
     
-    # 安全地获取 progress_token
     try:
         if (server.request_context.meta is not None and
             hasattr(server.request_context.meta, 'progressToken')):
@@ -102,14 +105,11 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         logger.debug(f"Could not get progress token: {e}")
     
     results: List[types.TextContent | types.ImageContent] = []
-    
-    # 只在有 progress_token 时创建通知管理器
     notification_mgr = None
     if progress_token:
         notification_mgr = NotificationManager(session)
         
     try:
-        # 检查模型和尺寸是否兼容
         model = arguments.get("model", "dall-e-3")
         size = arguments.get("size", "1024x1024")
         
@@ -118,59 +118,54 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
             logger.warning(error_msg)
             return [types.TextContent(type="text", text=error_msg)]
         
-        # 1. 开始处理的提示
         orientation = "横屏" if size == "1792x1024" else "竖屏" if size == "1024x1792" else "方形"
-        status_message = f'正在生成{orientation}图像 ({size})...'
-        results.append(types.TextContent(type="text", text=status_message))
         
         if notification_mgr:
             async with notification_mgr:
                 await notification_mgr.send_notification(
                     await create_progress_notification(
                         progress_token=progress_token,
-                        progress=0.0,  # 开始
+                        progress=0.0,
                         total=100.0
                     )
                 )
                 
-        # 2. 调用 OpenAI 生成图像
         logger.info(f"Starting image generation with parameters: {arguments}")
-        image_data_list = await connector.create_image(
+        image_responses = await connector.create_image(
             prompt=arguments["prompt"],
             model=model,
             size=size,
             quality=arguments.get("quality", "standard"),
             n=arguments.get("n", 1)
         )
-        logger.debug(f"Received {len(image_data_list)} images from OpenAI")
+        logger.debug(f"Received {len(image_responses)} images from OpenAI")
         
         if notification_mgr:
             await notification_mgr.send_notification(
                 await create_progress_notification(
                     progress_token=progress_token,
-                    progress=50.0,  # 生成完成
+                    progress=50.0,
                     total=100.0
                 )
             )
 
-        # 3. 处理返回的图像
         results.append(
             types.TextContent(
                 type="text",
-                text=f'已生成 {len(image_data_list)} 张{orientation}图像 ({size})，描述为："{arguments["prompt"]}"'
+                text=f'已生成 {len(image_responses)} 张{orientation}图像 ({size})，描述为："{arguments["prompt"]}"'
             )
         )
 
-        # 4. 处理每张图片
-        step_size = 40.0 / len(image_data_list)  # 剩余40%进度分配给图片处理
-        for idx, image_data in enumerate(image_data_list, 1):
-            logger.debug(f"Processing image {idx}/{len(image_data_list)}")
+        step_size = 40.0 / len(image_responses)
+        for idx, image_response in enumerate(image_responses, 1):
+            logger.debug(f"Processing image {idx}/{len(image_responses)}")
             
-            # 压缩图像
-            compressed_data, mime_type = compress_image_data(image_data["data"])
+            # 下载并处理图片
+            image_data = await download_image(image_response["url"])
+            compressed_data, mime_type = compress_image_data(image_data)
             encoded_data = base64.b64encode(compressed_data).decode('utf-8')
             
-            # 添加图像到结果
+            # 添加图像和信息
             results.append(
                 types.ImageContent(
                     type="image",
@@ -179,11 +174,10 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                 )
             )
             
-            # 添加分隔信息
             results.append(
                 types.TextContent(
                     type="text",
-                    text=f"\n已显示第 {idx} 张图片。\n{'-' * 50}"
+                    text=f"\n已显示第 {idx} 张图片。\n原图下载链接: {image_response['url']}\n{'-' * 50}"
                 )
             )
             
@@ -197,7 +191,6 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                     )
                 )
 
-        # 5. 最终成功通知
         logger.info("Image generation and processing completed successfully")
         if notification_mgr:
             await notification_mgr.send_notification(
@@ -207,7 +200,7 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                     total=100.0,
                     is_final=True
                 ),
-                shield=True  # 确保最终通知被发送
+                shield=True
             )
             
         return results
@@ -217,7 +210,6 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
         logger.error(error_msg, exc_info=True)
         results.append(types.TextContent(type="text", text=error_msg))
         
-        # 发送错误状态通知
         if notification_mgr and not notification_mgr.is_closed:
             try:
                 await notification_mgr.send_notification(
@@ -227,7 +219,7 @@ async def handle_create_image(server, connector, arguments: dict) -> List[types.
                         total=100.0,
                         is_final=True
                     ),
-                    shield=True  # 确保错误通知被发送
+                    shield=True
                 )
             except Exception as notify_error:
                 logger.error(f"Failed to send error notification: {notify_error}")

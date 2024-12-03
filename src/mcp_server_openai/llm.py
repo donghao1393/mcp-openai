@@ -26,12 +26,9 @@ def calculate_backoff_delay(retry: int, base_delay: float = 1.0, jitter: float =
     Returns:
         float: 计算得到的延迟时间（秒）
     """
-    # 指数退避
     delay = base_delay * (2 ** retry)
-    # 添加随机抖动，避免多个请求同时重试
     jitter_amount = delay * jitter
     actual_delay = delay + random.uniform(-jitter_amount, jitter_amount)
-    # 确保延迟不会小于基础延迟
     return max(base_delay, actual_delay)
 
 class LLMConnector:
@@ -51,21 +48,7 @@ class LLMConnector:
         temperature: float = 0.7, 
         max_tokens: int = 500
     ) -> str:
-        """
-        向OpenAI发送问题并获取回答
-        
-        Args:
-            query: 问题内容
-            model: 模型名称
-            temperature: 温度参数
-            max_tokens: 最大令牌数
-            
-        Returns:
-            str: 模型的回答
-            
-        Raises:
-            RuntimeError: 如果连接器已关闭
-        """
+        """向OpenAI发送问题并获取回答"""
         if self._closed:
             raise RuntimeError("Connector is closed")
             
@@ -93,26 +76,8 @@ class LLMConnector:
         n: int = 1,
         timeout: float = 60.0,
         max_retries: int = 3
-    ) -> List[Dict[str, Union[bytes, str]]]:
-        """
-        使用 DALL·E 生成图像并返回图像数据
-        
-        Args:
-            prompt: 图像描述
-            model: DALL·E 模型版本
-            size: 图像尺寸
-            quality: 图像质量
-            n: 生成图像数量
-            timeout: 超时时间（秒）
-            max_retries: 最大重试次数
-            
-        Returns:
-            List[Dict[str, Union[bytes, str]]]: 图像数据列表
-            
-        Raises:
-            RuntimeError: 如果连接器已关闭
-            TimeoutError: 如果请求超时且重试失败
-        """
+    ) -> List[Dict[str, Union[str, bytes]]]:
+        """使用 DALL·E 生成图像"""
         if self._closed:
             raise RuntimeError("Connector is closed")
             
@@ -128,13 +93,14 @@ class LLMConnector:
                         size=size,
                         quality=quality,
                         n=n,
-                        response_format="b64_json"
+                        response_format="url" # 改为获取url
                     )
                     
+                    # 转换响应格式返回url和图片数据
                     image_data_list = []
                     for image in response.data:
                         image_data = {
-                            "data": base64.b64decode(image.b64_json),
+                            "url": image.url,  # 原图URL
                             "media_type": "image/png"
                         }
                         image_data_list.append(image_data)
@@ -175,16 +141,7 @@ class LLMConnector:
         raise TimeoutError(error_msg)
 
     async def close(self, timeout: float = 10.0) -> None:
-        """
-        关闭连接器，清理资源
-        
-        Args:
-            timeout: 关闭操作的超时时间（秒）
-            
-        Raises:
-            TimeoutError: 如果关闭操作超时
-            RuntimeError: 如果连接器已在关闭过程中
-        """
+        """关闭连接器"""
         if self._closed:
             logger.debug("Connector already closed")
             return
